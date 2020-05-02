@@ -61,6 +61,7 @@ import org.apache.flink.runtime.executiongraph.restart.RestartStrategyResolving;
 import org.apache.flink.runtime.io.network.partition.JobMasterPartitionTracker;
 import org.apache.flink.runtime.io.network.partition.ResultPartitionID;
 import org.apache.flink.runtime.jobgraph.IntermediateDataSetID;
+import org.apache.flink.runtime.jobgraph.IntermediateResultPartitionID;
 import org.apache.flink.runtime.jobgraph.JobGraph;
 import org.apache.flink.runtime.jobgraph.JobVertexID;
 import org.apache.flink.runtime.jobgraph.OperatorID;
@@ -131,7 +132,7 @@ public abstract class SchedulerBase implements SchedulerNG {
 
 	private final ExecutionGraph executionGraph;
 
-	private final SchedulingTopology<?, ?> schedulingTopology;
+	private final SchedulingTopology schedulingTopology;
 
 	private final InputsLocationsRetriever inputsLocationsRetriever;
 
@@ -379,7 +380,7 @@ public abstract class SchedulerBase implements SchedulerNG {
 		executionGraph.failJob(cause);
 	}
 
-	protected final SchedulingTopology<?, ?> getSchedulingTopology() {
+	protected final SchedulingTopology getSchedulingTopology() {
 		return schedulingTopology;
 	}
 
@@ -614,11 +615,10 @@ public abstract class SchedulerBase implements SchedulerNG {
 			throw new RuntimeException(e);
 		}
 
-		final ExecutionVertexID producerVertexId = getExecutionVertexIdOrThrow(partitionId.getProducerId());
-		scheduleOrUpdateConsumersInternal(producerVertexId, partitionId);
+		scheduleOrUpdateConsumersInternal(partitionId.getPartitionId());
 	}
 
-	protected void scheduleOrUpdateConsumersInternal(ExecutionVertexID producerVertexId, ResultPartitionID resultPartitionId) {
+	protected void scheduleOrUpdateConsumersInternal(IntermediateResultPartitionID resultPartitionId) {
 	}
 
 	@Override
@@ -789,11 +789,13 @@ public abstract class SchedulerBase implements SchedulerNG {
 		final String taskManagerLocationInfo = retrieveTaskManagerLocation(executionAttemptID);
 
 		if (checkpointCoordinator != null) {
-			try {
-				checkpointCoordinator.receiveAcknowledgeMessage(ackMessage, taskManagerLocationInfo);
-			} catch (Throwable t) {
-				log.warn("Error while processing checkpoint acknowledgement message", t);
-			}
+			ioExecutor.execute(() -> {
+				try {
+					checkpointCoordinator.receiveAcknowledgeMessage(ackMessage, taskManagerLocationInfo);
+				} catch (Throwable t) {
+					log.warn("Error while processing checkpoint acknowledgement message", t);
+				}
+			});
 		} else {
 			String errorMessage = "Received AcknowledgeCheckpoint message for job {} with no CheckpointCoordinator";
 			if (executionGraph.getState() == JobStatus.RUNNING) {
@@ -812,11 +814,13 @@ public abstract class SchedulerBase implements SchedulerNG {
 		final String taskManagerLocationInfo = retrieveTaskManagerLocation(decline.getTaskExecutionId());
 
 		if (checkpointCoordinator != null) {
-			try {
-				checkpointCoordinator.receiveDeclineMessage(decline, taskManagerLocationInfo);
-			} catch (Exception e) {
-				log.error("Error in CheckpointCoordinator while processing {}", decline, e);
-			}
+			ioExecutor.execute(() -> {
+				try {
+					checkpointCoordinator.receiveDeclineMessage(decline, taskManagerLocationInfo);
+				} catch (Exception e) {
+					log.error("Error in CheckpointCoordinator while processing {}", decline, e);
+				}
+			});
 		} else {
 			String errorMessage = "Received DeclineCheckpoint message for job {} with no CheckpointCoordinator";
 			if (executionGraph.getState() == JobStatus.RUNNING) {

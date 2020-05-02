@@ -39,6 +39,10 @@
     "org.apache.flink.sql.parser.ddl.SqlDropTable"
     "org.apache.flink.sql.parser.ddl.SqlDropView"
     "org.apache.flink.sql.parser.ddl.SqlTableColumn"
+    "org.apache.flink.sql.parser.ddl.SqlTableLike"
+    "org.apache.flink.sql.parser.ddl.SqlTableLike.FeatureOption"
+    "org.apache.flink.sql.parser.ddl.SqlTableLike.MergingStrategy"
+    "org.apache.flink.sql.parser.ddl.SqlTableLike.SqlTableLikeOption"
     "org.apache.flink.sql.parser.ddl.SqlTableOption"
     "org.apache.flink.sql.parser.ddl.SqlUseCatalog"
     "org.apache.flink.sql.parser.ddl.SqlUseDatabase"
@@ -51,11 +55,12 @@
     "org.apache.flink.sql.parser.dql.SqlShowDatabases"
     "org.apache.flink.sql.parser.dql.SqlShowFunctions"
     "org.apache.flink.sql.parser.dql.SqlShowTables"
+    "org.apache.flink.sql.parser.dql.SqlShowViews"
     "org.apache.flink.sql.parser.dql.SqlRichDescribeTable"
     "org.apache.flink.sql.parser.type.ExtendedSqlCollectionTypeNameSpec"
     "org.apache.flink.sql.parser.type.ExtendedSqlRowTypeNameSpec"
     "org.apache.flink.sql.parser.type.SqlMapTypeNameSpec"
-    "org.apache.flink.sql.parser.utils.SqlTimeUnit"
+    "org.apache.flink.sql.parser.type.SqlRawTypeNameSpec"
     "org.apache.flink.sql.parser.utils.ParserResource"
     "org.apache.flink.sql.parser.validate.FlinkSqlConformance"
     "org.apache.flink.sql.parser.SqlProperty"
@@ -78,13 +83,17 @@
     "FUNCTIONS"
     "IF"
     "OVERWRITE"
+    "OVERWRITING"
     "PARTITIONED"
+    "PARTITIONS"
+    "PYTHON"
     "RAW"
     "RENAME"
     "SCALA"
     "STRING"
     "TABLES"
     "USE"
+    "VIEWS"
     "WATERMARK"
   ]
 
@@ -265,6 +274,7 @@
     "PRIOR"
     "PRIVILEGES"
     "PUBLIC"
+    "PYTHON"
     "QUARTER"
     "READ"
     "RELATIVE"
@@ -408,7 +418,9 @@
     # not in core, added in Flink
     "IF"
     "OVERWRITE"
+    "OVERWRITING"
     "PARTITIONED"
+    "PARTITIONS"
   ]
 
   # List of non-reserved keywords to remove;
@@ -433,6 +445,7 @@
     "SqlShowTables()"
     "SqlRichDescribeTable()"
     "SqlAlterTable()"
+    "SqlShowViews()"
   ]
 
   # List of methods for parsing custom literals.
@@ -448,6 +461,7 @@
     "ExtendedSqlBasicTypeName()"
     "CustomizedCollectionsTypeName()"
     "SqlMapTypeName()"
+    "SqlRawTypeName()"
     "ExtendedSqlRowTypeName()"
   ]
 
@@ -466,20 +480,13 @@
   # List of methods for parsing extensions to "CREATE [OR REPLACE]" calls.
   # Each must accept arguments "(SqlParserPos pos, boolean replace)".
   createStatementParserMethods: [
-    "SqlCreateCatalog"
-    "SqlCreateTable"
-    "SqlCreateView"
-    "SqlCreateDatabase"
-    "SqlCreateFunction"
+    "SqlCreateExtended"
   ]
 
   # List of methods for parsing extensions to "DROP" calls.
   # Each must accept arguments "(Span s)".
   dropStatementParserMethods: [
-    "SqlDropTable"
-    "SqlDropView"
-    "SqlDropDatabase"
-    "SqlDropFunction"
+    "SqlDropExtended"
   ]
 
   # Binary operators tokens

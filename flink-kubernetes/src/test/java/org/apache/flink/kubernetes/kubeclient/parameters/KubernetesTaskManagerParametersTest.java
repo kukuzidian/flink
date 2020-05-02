@@ -74,12 +74,10 @@ public class KubernetesTaskManagerParametersTest extends KubernetesTestBase {
 		final TaskExecutorProcessSpec taskExecutorProcessSpec =
 			TaskExecutorProcessUtils.processSpecFromConfig(flinkConfig);
 		final ContaineredTaskManagerParameters containeredTaskManagerParameters =
-			ContaineredTaskManagerParameters.create(flinkConfig, taskExecutorProcessSpec,
-				flinkConfig.getInteger(TaskManagerOptions.NUM_TASK_SLOTS));
+			ContaineredTaskManagerParameters.create(flinkConfig, taskExecutorProcessSpec);
 
 		this.kubernetesTaskManagerParameters = new KubernetesTaskManagerParameters(flinkConfig,
 			POD_NAME,
-			TASK_MANAGER_MEMORY,
 			DYNAMIC_PROPERTIES,
 			containeredTaskManagerParameters);
 	}

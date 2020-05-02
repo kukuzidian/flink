@@ -396,9 +396,6 @@ public class ExecutionGraph implements AccessExecutionGraph {
 
 	public void start(@Nonnull ComponentMainThreadExecutor jobMasterMainThreadExecutor) {
 		this.jobMasterMainThreadExecutor = jobMasterMainThreadExecutor;
-		if (checkpointCoordinator != null) {
-			checkpointCoordinator.start(this.jobMasterMainThreadExecutor);
-		}
 	}
 
 	// --------------------------------------------------------------------------------------------
@@ -413,7 +410,7 @@ public class ExecutionGraph implements AccessExecutionGraph {
 		return this.verticesInCreationOrder.size();
 	}
 
-	public SchedulingTopology<?, ?> getSchedulingTopology() {
+	public SchedulingTopology getSchedulingTopology() {
 		return executionTopology;
 	}
 
@@ -467,14 +464,12 @@ public class ExecutionGraph implements AccessExecutionGraph {
 			new CheckpointFailureManager.FailJobCallback() {
 				@Override
 				public void failJob(Throwable cause) {
-					assertRunningInJobMasterMainThread();
-					failGlobal(cause);
+					getJobMasterMainThreadExecutor().execute(() -> failGlobal(cause));
 				}
 
 				@Override
 				public void failJobDueToTaskFailure(Throwable cause, ExecutionAttemptID failingTask) {
-					assertRunningInJobMasterMainThread();
-					failGlobalIfExecutionIsStillRunning(cause, failingTask);
+					getJobMasterMainThreadExecutor().execute(() -> failGlobalIfExecutionIsStillRunning(cause, failingTask));
 				}
 			}
 		);
@@ -1546,9 +1541,9 @@ public class ExecutionGraph implements AccessExecutionGraph {
 	}
 
 	ResultPartitionID createResultPartitionId(final IntermediateResultPartitionID resultPartitionId) {
-		final SchedulingResultPartition<?, ?> schedulingResultPartition =
-			getSchedulingTopology().getResultPartitionOrThrow(resultPartitionId);
-		final SchedulingExecutionVertex<?, ?> producer = schedulingResultPartition.getProducer();
+		final SchedulingResultPartition schedulingResultPartition =
+			getSchedulingTopology().getResultPartition(resultPartitionId);
+		final SchedulingExecutionVertex producer = schedulingResultPartition.getProducer();
 		final ExecutionVertexID producerId = producer.getId();
 		final JobVertexID jobVertexId = producerId.getJobVertexId();
 		final ExecutionJobVertex jobVertex = getJobVertex(jobVertexId);

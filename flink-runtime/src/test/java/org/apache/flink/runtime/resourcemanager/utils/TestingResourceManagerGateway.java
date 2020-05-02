@@ -27,10 +27,13 @@ import org.apache.flink.runtime.blob.TransientBlobKey;
 import org.apache.flink.runtime.clusterframework.ApplicationStatus;
 import org.apache.flink.runtime.clusterframework.types.AllocationID;
 import org.apache.flink.runtime.clusterframework.types.ResourceID;
+import org.apache.flink.runtime.clusterframework.types.ResourceProfile;
 import org.apache.flink.runtime.clusterframework.types.SlotID;
 import org.apache.flink.runtime.concurrent.FutureUtils;
 import org.apache.flink.runtime.entrypoint.ClusterInformation;
 import org.apache.flink.runtime.instance.InstanceID;
+import org.apache.flink.runtime.io.network.partition.DataSetMetaInfo;
+import org.apache.flink.runtime.jobgraph.IntermediateDataSetID;
 import org.apache.flink.runtime.jobmaster.JobMasterId;
 import org.apache.flink.runtime.jobmaster.JobMasterRegistrationSuccess;
 import org.apache.flink.runtime.messages.Acknowledge;
@@ -41,8 +44,9 @@ import org.apache.flink.runtime.resourcemanager.ResourceOverview;
 import org.apache.flink.runtime.resourcemanager.SlotRequest;
 import org.apache.flink.runtime.resourcemanager.TaskExecutorRegistration;
 import org.apache.flink.runtime.resourcemanager.exceptions.UnknownTaskExecutorException;
-import org.apache.flink.runtime.rest.messages.taskmanager.LogInfo;
+import org.apache.flink.runtime.rest.messages.LogInfo;
 import org.apache.flink.runtime.rest.messages.taskmanager.TaskManagerInfo;
+import org.apache.flink.runtime.rest.messages.taskmanager.ThreadDumpInfo;
 import org.apache.flink.runtime.taskexecutor.FileType;
 import org.apache.flink.runtime.taskexecutor.SlotReport;
 import org.apache.flink.runtime.taskexecutor.TaskExecutorHeartbeatPayload;
@@ -51,6 +55,7 @@ import org.apache.flink.util.Preconditions;
 
 import java.util.Collection;
 import java.util.Collections;
+import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicReference;
@@ -96,6 +101,8 @@ public class TestingResourceManagerGateway implements ResourceManagerGateway {
 	private volatile Consumer<Tuple3<InstanceID, SlotID, AllocationID>> notifySlotAvailableConsumer;
 
 	private volatile Function<ResourceID, CompletableFuture<Collection<LogInfo>>> requestTaskManagerLogListFunction;
+
+	private volatile Function<ResourceID, CompletableFuture<ThreadDumpInfo>> requestThreadDumpFunction;
 
 	public TestingResourceManagerGateway() {
 		this(
@@ -173,6 +180,10 @@ public class TestingResourceManagerGateway implements ResourceManagerGateway {
 
 	public void setNotifySlotAvailableConsumer(Consumer<Tuple3<InstanceID, SlotID, AllocationID>> notifySlotAvailableConsumer) {
 		this.notifySlotAvailableConsumer = notifySlotAvailableConsumer;
+	}
+
+	public void setRequestThreadDumpFunction(Function<ResourceID, CompletableFuture<ThreadDumpInfo>> requestThreadDumpFunction) {
+		this.requestThreadDumpFunction = requestThreadDumpFunction;
 	}
 
 	@Override
@@ -304,7 +315,7 @@ public class TestingResourceManagerGateway implements ResourceManagerGateway {
 
 	@Override
 	public CompletableFuture<ResourceOverview> requestResourceOverview(Time timeout) {
-		return CompletableFuture.completedFuture(new ResourceOverview(1, 1, 1));
+		return CompletableFuture.completedFuture(new ResourceOverview(1, 1, 1, ResourceProfile.ZERO, ResourceProfile.ZERO));
 	}
 
 	@Override
@@ -345,6 +356,17 @@ public class TestingResourceManagerGateway implements ResourceManagerGateway {
 	}
 
 	@Override
+	public CompletableFuture<ThreadDumpInfo> requestThreadDump(ResourceID taskManagerId, Time timeout) {
+		final Function<ResourceID, CompletableFuture<ThreadDumpInfo>> function = this.requestThreadDumpFunction;
+
+		if (function != null) {
+			return function.apply(taskManagerId);
+		} else {
+			return FutureUtils.completedExceptionally(new UnknownTaskExecutorException(taskManagerId));
+		}
+	}
+
+	@Override
 	public ResourceManagerId getFencingToken() {
 		return resourceManagerId;
 	}
@@ -357,5 +379,15 @@ public class TestingResourceManagerGateway implements ResourceManagerGateway {
 	@Override
 	public String getHostname() {
 		return hostname;
+	}
+
+	@Override
+	public CompletableFuture<Map<IntermediateDataSetID, DataSetMetaInfo>> listDataSets() {
+		return CompletableFuture.completedFuture(Collections.emptyMap());
+	}
+
+	@Override
+	public CompletableFuture<Void> releaseClusterPartitions(IntermediateDataSetID dataSetToRelease) {
+		return CompletableFuture.completedFuture(null);
 	}
 }

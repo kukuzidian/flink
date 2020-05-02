@@ -21,6 +21,8 @@ package org.apache.flink.table.connector.sink;
 import org.apache.flink.annotation.PublicEvolving;
 import org.apache.flink.table.connector.ChangelogMode;
 import org.apache.flink.table.connector.RuntimeConverter;
+import org.apache.flink.table.connector.sink.abilities.SupportsOverwrite;
+import org.apache.flink.table.connector.sink.abilities.SupportsPartitioning;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.types.DataType;
 import org.apache.flink.table.types.logical.LogicalType;
@@ -58,7 +60,8 @@ import java.io.Serializable;
  *
  * <p>A {@link DynamicTableSink} can implement the following abilities:
  * <ul>
- *     <li>TBD
+ *     <li>{@link SupportsPartitioning}
+ *     <li>{@link SupportsOverwrite}
  * </ul>
  *
  * <p>In the last step, the planner will call {@link #getSinkRuntimeProvider(Context)} for obtaining a
@@ -86,7 +89,7 @@ public interface DynamicTableSink {
 	 * in other Flink modules.
 	 *
 	 * <p>Independent of the provider interface, the table runtime expects that a sink implementation
-	 * accepts internal data structures (see {@link org.apache.flink.table.data} for more information).
+	 * accepts internal data structures (see {@link org.apache.flink.table.data.RowData} for more information).
 	 *
 	 * <p>The given {@link Context} offers utilities by the planner for creating runtime implementation
 	 * with minimal dependencies to internal data structures.

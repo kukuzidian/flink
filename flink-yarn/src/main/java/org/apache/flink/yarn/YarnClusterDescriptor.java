@@ -21,10 +21,12 @@ package org.apache.flink.yarn;
 import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.common.cache.DistributedCache;
 import org.apache.flink.api.java.tuple.Tuple2;
+import org.apache.flink.client.cli.CliFrontend;
 import org.apache.flink.client.deployment.ClusterDeploymentException;
 import org.apache.flink.client.deployment.ClusterDescriptor;
 import org.apache.flink.client.deployment.ClusterRetrieveException;
 import org.apache.flink.client.deployment.ClusterSpecification;
+import org.apache.flink.client.deployment.application.ApplicationConfiguration;
 import org.apache.flink.client.program.ClusterClientProvider;
 import org.apache.flink.client.program.rest.RestClusterClient;
 import org.apache.flink.configuration.ConfigConstants;
@@ -35,6 +37,7 @@ import org.apache.flink.configuration.CoreOptions;
 import org.apache.flink.configuration.HighAvailabilityOptions;
 import org.apache.flink.configuration.IllegalConfigurationException;
 import org.apache.flink.configuration.JobManagerOptions;
+import org.apache.flink.configuration.PipelineOptions;
 import org.apache.flink.configuration.ResourceManagerOptions;
 import org.apache.flink.configuration.RestOptions;
 import org.apache.flink.configuration.SecurityOptions;
@@ -44,12 +47,18 @@ import org.apache.flink.runtime.clusterframework.BootstrapTools;
 import org.apache.flink.runtime.entrypoint.ClusterEntrypoint;
 import org.apache.flink.runtime.jobgraph.JobGraph;
 import org.apache.flink.runtime.jobmanager.HighAvailabilityMode;
+import org.apache.flink.runtime.jobmanager.JobManagerProcessSpec;
+import org.apache.flink.runtime.jobmanager.JobManagerProcessUtils;
 import org.apache.flink.runtime.util.HadoopUtils;
+import org.apache.flink.runtime.util.config.memory.ProcessMemoryUtils;
 import org.apache.flink.util.FlinkException;
 import org.apache.flink.util.Preconditions;
 import org.apache.flink.util.ShutdownHookUtil;
 import org.apache.flink.yarn.configuration.YarnConfigOptions;
 import org.apache.flink.yarn.configuration.YarnConfigOptionsInternal;
+import org.apache.flink.yarn.configuration.YarnDeploymentTarget;
+import org.apache.flink.yarn.configuration.YarnLogConfigUtil;
+import org.apache.flink.yarn.entrypoint.YarnApplicationClusterEntryPoint;
 import org.apache.flink.yarn.entrypoint.YarnJobClusterEntrypoint;
 import org.apache.flink.yarn.entrypoint.YarnSessionClusterEntrypoint;
 
@@ -94,6 +103,7 @@ import java.io.PrintStream;
 import java.io.UnsupportedEncodingException;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
+import java.net.URI;
 import java.net.URLDecoder;
 import java.nio.charset.Charset;
 import java.nio.file.FileVisitResult;
@@ -117,8 +127,6 @@ import static org.apache.flink.configuration.ConfigConstants.ENV_FLINK_LIB_DIR;
 import static org.apache.flink.runtime.entrypoint.component.FileJobGraphRetriever.JOB_GRAPH_FILE_PATH;
 import static org.apache.flink.util.Preconditions.checkArgument;
 import static org.apache.flink.util.Preconditions.checkNotNull;
-import static org.apache.flink.yarn.cli.FlinkYarnSessionCli.CONFIG_FILE_LOG4J_NAME;
-import static org.apache.flink.yarn.cli.FlinkYarnSessionCli.CONFIG_FILE_LOGBACK_NAME;
 
 /**
  * The descriptor with deployment information for deploying a Flink cluster on Yarn.
@@ -381,6 +389,38 @@ public class YarnClusterDescriptor implements ClusterDescriptor<ApplicationId> {
 					false);
 		} catch (Exception e) {
 			throw new ClusterDeploymentException("Couldn't deploy Yarn session cluster", e);
+		}
+	}
+
+	@Override
+	public ClusterClientProvider<ApplicationId> deployApplicationCluster(
+			final ClusterSpecification clusterSpecification,
+			final ApplicationConfiguration applicationConfiguration) throws ClusterDeploymentException {
+		checkNotNull(clusterSpecification);
+		checkNotNull(applicationConfiguration);
+
+		final YarnDeploymentTarget deploymentTarget = YarnDeploymentTarget.fromConfig(flinkConfiguration);
+		if (YarnDeploymentTarget.APPLICATION != deploymentTarget) {
+			throw new ClusterDeploymentException(
+					"Couldn't deploy Yarn Application Cluster." +
+							" Expected deployment.target=" + YarnDeploymentTarget.APPLICATION.getName() +
+							" but actual one was \"" + deploymentTarget.getName() + "\"");
+		}
+
+		applicationConfiguration.applyToConfiguration(flinkConfiguration);
+
+		final String configurationDirectory = CliFrontend.getConfigurationDirectoryFromEnv();
+		YarnLogConfigUtil.setLogConfigFileInConfig(flinkConfiguration, configurationDirectory);
+
+		try {
+			return deployInternal(
+					clusterSpecification,
+					"Flink Application Cluster",
+					YarnApplicationClusterEntryPoint.class.getName(),
+					null,
+					false);
+		} catch (Exception e) {
+			throw new ClusterDeploymentException("Couldn't deploy Yarn Application Cluster", e);
 		}
 	}
 
@@ -688,11 +728,15 @@ public class YarnClusterDescriptor implements ClusterDescriptor<ApplicationId> {
 							1));
 		}
 
-		final Set<File> userJarFiles = (jobGraph == null)
-				// not per-job submission
-				? Collections.emptySet()
-				// add user code jars from the provided JobGraph
-				: jobGraph.getUserJars().stream().map(f -> f.toUri()).map(File::new).collect(Collectors.toSet());
+		final Set<File> userJarFiles = new HashSet<>();
+		if (jobGraph != null) {
+			userJarFiles.addAll(jobGraph.getUserJars().stream().map(f -> f.toUri()).map(File::new).collect(Collectors.toSet()));
+		}
+
+		final List<URI> jarUrls = ConfigUtils.decodeListFromConfig(configuration, PipelineOptions.JARS, URI::create);
+		if (jarUrls != null && YarnApplicationClusterEntryPoint.class.getName().equals(yarnClusterEntrypoint)) {
+			userJarFiles.addAll(jarUrls.stream().map(File::new).collect(Collectors.toSet()));
+		}
 
 		int yarnFileReplication = yarnConfiguration.getInt(DFSConfigKeys.DFS_REPLICATION_KEY, DFSConfigKeys.DFS_REPLICATION_DEFAULT);
 		int fileReplication = configuration.getInteger(YarnConfigOptions.FILE_REPLICATION);
@@ -924,15 +968,13 @@ public class YarnClusterDescriptor implements ClusterDescriptor<ApplicationId> {
 			}
 		}
 
-		final boolean hasLogback = logConfigFilePath != null && logConfigFilePath.endsWith(CONFIG_FILE_LOGBACK_NAME);
-		final boolean hasLog4j = logConfigFilePath != null && logConfigFilePath.endsWith(CONFIG_FILE_LOG4J_NAME);
-
+		final JobManagerProcessSpec processSpec = JobManagerProcessUtils.processSpecFromConfigWithFallbackForLegacyHeap(
+			flinkConfiguration,
+			JobManagerOptions.TOTAL_PROCESS_MEMORY);
 		final ContainerLaunchContext amContainer = setupApplicationMasterContainer(
 				yarnClusterEntrypoint,
-				hasLogback,
-				hasLog4j,
 				hasKrb5,
-				clusterSpecification.getMasterMemoryMB());
+				processSpec);
 
 		// setup security tokens
 		if (UserGroupInformation.isSecurityEnabled()) {
@@ -1567,10 +1609,8 @@ public class YarnClusterDescriptor implements ClusterDescriptor<ApplicationId> {
 
 	ContainerLaunchContext setupApplicationMasterContainer(
 			String yarnClusterEntrypoint,
-			boolean hasLogback,
-			boolean hasLog4j,
 			boolean hasKrb5,
-			int jobManagerMemoryMb) {
+			JobManagerProcessSpec processSpec) {
 		// ------------------ Prepare Application Master Container  ------------------------------
 
 		// respect custom JVM options in the YAML file
@@ -1590,27 +1630,12 @@ public class YarnClusterDescriptor implements ClusterDescriptor<ApplicationId> {
 		final  Map<String, String> startCommandValues = new HashMap<>();
 		startCommandValues.put("java", "$JAVA_HOME/bin/java");
 
-		int heapSize = BootstrapTools.calculateHeapSize(jobManagerMemoryMb, flinkConfiguration);
-		String jvmHeapMem = String.format("-Xms%sm -Xmx%sm", heapSize, heapSize);
+		String jvmHeapMem = ProcessMemoryUtils.generateJvmParametersStr(processSpec);
 		startCommandValues.put("jvmmem", jvmHeapMem);
 
 		startCommandValues.put("jvmopts", javaOpts);
-		String logging = "";
+		startCommandValues.put("logging", YarnLogConfigUtil.getLoggingYarnCommand(flinkConfiguration));
 
-		if (hasLogback || hasLog4j) {
-			logging = "-Dlog.file=\"" + ApplicationConstants.LOG_DIR_EXPANSION_VAR + "/jobmanager.log\"";
-
-			if (hasLogback) {
-				logging += " -Dlogback.configurationFile=file:" + CONFIG_FILE_LOGBACK_NAME;
-			}
-
-			if (hasLog4j) {
-				logging += " -Dlog4j.configuration=file:" + CONFIG_FILE_LOG4J_NAME;
-				logging += " -Dlog4j.configurationFile=file:" + CONFIG_FILE_LOG4J_NAME;
-			}
-		}
-
-		startCommandValues.put("logging", logging);
 		startCommandValues.put("class", yarnClusterEntrypoint);
 		startCommandValues.put("redirects",
 			"1> " + ApplicationConstants.LOG_DIR_EXPANSION_VAR + "/jobmanager.out " +

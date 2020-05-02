@@ -19,13 +19,11 @@
 package org.apache.flink.runtime.scheduler.strategy;
 
 import org.apache.flink.runtime.execution.ExecutionState;
-import org.apache.flink.runtime.io.network.partition.ResultPartitionID;
+import org.apache.flink.runtime.jobgraph.IntermediateResultPartitionID;
 import org.apache.flink.runtime.scheduler.DeploymentOption;
 import org.apache.flink.runtime.scheduler.ExecutionVertexDeploymentOption;
 import org.apache.flink.runtime.scheduler.SchedulerOperations;
 import org.apache.flink.util.IterableUtils;
-
-import org.apache.flink.shaded.guava18.com.google.common.collect.Iterables;
 
 import java.util.Collections;
 import java.util.HashMap;
@@ -44,11 +42,11 @@ import static org.apache.flink.util.Preconditions.checkNotNull;
  */
 public class LazyFromSourcesSchedulingStrategy implements SchedulingStrategy {
 
-	private static final Predicate<SchedulingExecutionVertex<?, ?>> IS_IN_CREATED_EXECUTION_STATE = schedulingExecutionVertex -> CREATED == schedulingExecutionVertex.getState();
+	private static final Predicate<SchedulingExecutionVertex> IS_IN_CREATED_EXECUTION_STATE = schedulingExecutionVertex -> CREATED == schedulingExecutionVertex.getState();
 
 	private final SchedulerOperations schedulerOperations;
 
-	private final SchedulingTopology<?, ?> schedulingTopology;
+	private final SchedulingTopology schedulingTopology;
 
 	private final Map<ExecutionVertexID, DeploymentOption> deploymentOptions;
 
@@ -56,7 +54,7 @@ public class LazyFromSourcesSchedulingStrategy implements SchedulingStrategy {
 
 	public LazyFromSourcesSchedulingStrategy(
 			SchedulerOperations schedulerOperations,
-			SchedulingTopology<?, ?> schedulingTopology) {
+			SchedulingTopology schedulingTopology) {
 
 		this.schedulerOperations = checkNotNull(schedulerOperations);
 		this.schedulingTopology = checkNotNull(schedulingTopology);
@@ -69,9 +67,9 @@ public class LazyFromSourcesSchedulingStrategy implements SchedulingStrategy {
 		final DeploymentOption updateOption = new DeploymentOption(true);
 		final DeploymentOption nonUpdateOption = new DeploymentOption(false);
 
-		for (SchedulingExecutionVertex<?, ?> schedulingVertex : schedulingTopology.getVertices()) {
+		for (SchedulingExecutionVertex schedulingVertex : schedulingTopology.getVertices()) {
 			DeploymentOption option = nonUpdateOption;
-			for (SchedulingResultPartition<?, ?> srp : schedulingVertex.getProducedResults()) {
+			for (SchedulingResultPartition srp : schedulingVertex.getProducedResults()) {
 				if (srp.getResultType().isPipelined()) {
 					option = updateOption;
 				}
@@ -88,7 +86,7 @@ public class LazyFromSourcesSchedulingStrategy implements SchedulingStrategy {
 		// increase counter of the dataset first
 		verticesToRestart
 			.stream()
-			.map(schedulingTopology::getVertexOrThrow)
+			.map(schedulingTopology::getVertex)
 			.flatMap(vertex -> IterableUtils.toStream(vertex.getProducedResults()))
 			.forEach(inputConstraintChecker::resetSchedulingResultPartition);
 
@@ -102,8 +100,8 @@ public class LazyFromSourcesSchedulingStrategy implements SchedulingStrategy {
 			return;
 		}
 
-		final Set<SchedulingExecutionVertex<?, ?>> verticesToSchedule = IterableUtils
-			.toStream(schedulingTopology.getVertexOrThrow(executionVertexId).getProducedResults())
+		final Set<SchedulingExecutionVertex> verticesToSchedule = IterableUtils
+			.toStream(schedulingTopology.getVertex(executionVertexId).getProducedResults())
 			.filter(partition -> partition.getResultType().isBlocking())
 			.flatMap(partition -> inputConstraintChecker.markSchedulingResultPartitionFinished(partition).stream())
 			.flatMap(partition -> IterableUtils.toStream(partition.getConsumers()))
@@ -113,25 +111,19 @@ public class LazyFromSourcesSchedulingStrategy implements SchedulingStrategy {
 	}
 
 	@Override
-	public void onPartitionConsumable(ExecutionVertexID executionVertexId, ResultPartitionID resultPartitionId) {
-		final SchedulingResultPartition<?, ?> resultPartition = schedulingTopology
-			.getResultPartitionOrThrow(resultPartitionId.getPartitionId());
+	public void onPartitionConsumable(IntermediateResultPartitionID resultPartitionId) {
+		final SchedulingResultPartition resultPartition = schedulingTopology
+			.getResultPartition(resultPartitionId);
 
 		if (!resultPartition.getResultType().isPipelined()) {
 			return;
-		}
-
-		final SchedulingExecutionVertex<?, ?> producerVertex = schedulingTopology.getVertexOrThrow(executionVertexId);
-		if (!Iterables.contains(producerVertex.getProducedResults(), resultPartition)) {
-			throw new IllegalStateException("partition " + resultPartitionId
-					+ " is not the produced partition of " + executionVertexId);
 		}
 
 		allocateSlotsAndDeployExecutionVertices(resultPartition.getConsumers());
 	}
 
 	private void allocateSlotsAndDeployExecutionVertices(
-			final Iterable<? extends SchedulingExecutionVertex<?, ?>> vertices) {
+			final Iterable<? extends SchedulingExecutionVertex> vertices) {
 
 		final Set<ExecutionVertexID> verticesToDeploy = IterableUtils.toStream(vertices)
 			.filter(IS_IN_CREATED_EXECUTION_STATE.and(isInputConstraintSatisfied()))
@@ -149,7 +141,7 @@ public class LazyFromSourcesSchedulingStrategy implements SchedulingStrategy {
 		}
 	}
 
-	private Predicate<SchedulingExecutionVertex<?, ?>> isInputConstraintSatisfied() {
+	private Predicate<SchedulingExecutionVertex> isInputConstraintSatisfied() {
 		return inputConstraintChecker::check;
 	}
 
@@ -160,7 +152,7 @@ public class LazyFromSourcesSchedulingStrategy implements SchedulingStrategy {
 		@Override
 		public SchedulingStrategy createInstance(
 				SchedulerOperations schedulerOperations,
-				SchedulingTopology<?, ?> schedulingTopology) {
+				SchedulingTopology schedulingTopology) {
 			return new LazyFromSourcesSchedulingStrategy(schedulerOperations, schedulingTopology);
 		}
 	}

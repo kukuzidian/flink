@@ -22,6 +22,7 @@ import org.apache.flink.streaming.api.TimeCharacteristic;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.table.api.java.StreamTableEnvironment;
 import org.apache.flink.types.Row;
+import org.apache.flink.util.TestLogger;
 
 import org.junit.Before;
 import org.junit.Test;
@@ -36,7 +37,7 @@ import static org.junit.Assert.assertEquals;
 /**
  * IT case for {@link TableUtils} in streaming mode.
  */
-public class TableUtilsStreamingITCase {
+public class TableUtilsStreamingITCase extends TestLogger {
 
 	private StreamExecutionEnvironment env;
 	private StreamTableEnvironment tEnv;
@@ -47,7 +48,7 @@ public class TableUtilsStreamingITCase {
 		env.setParallelism(4);
 		env.setStreamTimeCharacteristic(TimeCharacteristic.EventTime);
 
-		EnvironmentSettings settings = EnvironmentSettings.newInstance().useBlinkPlanner().inStreamingMode().build();
+		EnvironmentSettings settings = EnvironmentSettings.newInstance().inStreamingMode().build();
 		tEnv = StreamTableEnvironment.create(env, settings);
 	}
 
