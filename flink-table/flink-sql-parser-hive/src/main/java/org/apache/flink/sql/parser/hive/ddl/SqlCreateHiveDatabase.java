@@ -36,14 +36,20 @@ import org.apache.calcite.sql.parser.SqlParserPos;
  */
 public class SqlCreateHiveDatabase extends SqlCreateDatabase {
 
-	public static final String DATABASE_LOCATION_URI = "database.location_uri";
+	public static final String DATABASE_LOCATION_URI = "hive.database.location-uri";
 
 	private SqlNodeList originPropList;
 	private final SqlCharStringLiteral location;
 
 	public SqlCreateHiveDatabase(SqlParserPos pos, SqlIdentifier databaseName, SqlNodeList propertyList,
 			SqlCharStringLiteral comment, SqlCharStringLiteral location, boolean ifNotExists) throws ParseException {
-		super(pos, databaseName, HiveDDLUtils.checkReservedDBProperties(propertyList), comment, ifNotExists);
+		super(
+				pos,
+				databaseName,
+				HiveDDLUtils.checkReservedDBProperties(propertyList),
+				HiveDDLUtils.unescapeStringLiteral(comment),
+				ifNotExists
+		);
 		HiveDDLUtils.ensureNonGeneric(propertyList);
 		originPropList = new SqlNodeList(propertyList.getList(), propertyList.getParserPosition());
 		// mark it as a hive database

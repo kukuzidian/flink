@@ -63,6 +63,7 @@ public class HiveVectorizedParquetSplitReader implements SplitReader {
 
 		this.reader = ParquetSplitReaderUtil.genPartColumnarRowReader(
 				hiveVersion.startsWith("3"),
+				false, // hive case insensitive
 				conf,
 				fieldNames,
 				fieldTypes,
@@ -72,6 +73,11 @@ public class HiveVectorizedParquetSplitReader implements SplitReader {
 				new Path(fileSplit.getPath().toString()),
 				fileSplit.getStart(),
 				fileSplit.getLength());
+	}
+
+	@Override
+	public void seekToRow(long rowCount, RowData reuse) throws IOException {
+		this.reader.seekToRow(rowCount);
 	}
 
 	@Override

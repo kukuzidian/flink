@@ -404,7 +404,7 @@ class MyMapper extends RichMapFunction[Long,Long] {
   @transient private var meter: Meter = _
 
   override def open(config: Configuration): Unit = {
-    com.codahale.metrics.Meter dropwizardMeter = new com.codahale.metrics.Meter()
+    val dropwizardMeter: com.codahale.metrics.Meter = new com.codahale.metrics.Meter()
   
     meter = getRuntimeContext()
       .getMetricGroup()
@@ -586,11 +586,13 @@ metrics.reporter.my_other_reporter.port: 10000
 {% endhighlight %}
 
 **Important:** The jar containing the reporter must be accessible when Flink is started. Reporters that support the
- `factory.class` property can be loaded as [plugins]({{ site.baseurl }}/ops/plugins). Otherwise the jar must be placed
- in the /lib folder.
+ `factory.class` property can be loaded as [plugins]({% link ops/plugins.md %}). Otherwise the jar must be placed
+ in the /lib folder. Reporters that are shipped with Flink (i.e., all reporters documented on this page) are available
+ by default.
 
 You can write your own `Reporter` by implementing the `org.apache.flink.metrics.reporter.MetricReporter` interface.
 If the Reporter should send out reports regularly you have to implement the `Scheduled` interface as well.
+By additionally implementing a `MetricReporterFactory` your reporter can also be loaded as a plugin.
 
 The following sections list the supported reporters.
 
@@ -630,9 +632,6 @@ The domain thus identifies a metric class, while the key-property list identifie
 
 ### Graphite (org.apache.flink.metrics.graphite.GraphiteReporter)
 
-In order to use this reporter you must copy `/opt/flink-metrics-graphite-{{site.version}}.jar` into the `/plugins/graphite` folder
-of your Flink distribution.
-
 Parameters:
 
 - `host` - the Graphite server host
@@ -647,12 +646,13 @@ metrics.reporter.grph.factory.class: org.apache.flink.metrics.graphite.GraphiteR
 metrics.reporter.grph.host: localhost
 metrics.reporter.grph.port: 2003
 metrics.reporter.grph.protocol: TCP
+metrics.reporter.grph.interval: 60 SECONDS
 
 {% endhighlight %}
 
 ### InfluxDB (org.apache.flink.metrics.influxdb.InfluxdbReporter)
 
-In order to use this reporter you must copy `/opt/flink-metrics-influxdb-{{site.version}}.jar` into the `/lib` folder
+In order to use this reporter you must copy `/opt/flink-metrics-influxdb-{{site.version}}.jar` into the `plugins/influxdb` folder
 of your Flink distribution.
 
 Parameters:
@@ -663,7 +663,8 @@ Example configuration:
 
 {% highlight yaml %}
 
-metrics.reporter.influxdb.class: org.apache.flink.metrics.influxdb.InfluxdbReporter
+metrics.reporter.influxdb.factory.class: org.apache.flink.metrics.influxdb.InfluxdbReporterFactory
+metrics.reporter.influxdb.scheme: http
 metrics.reporter.influxdb.host: localhost
 metrics.reporter.influxdb.port: 8086
 metrics.reporter.influxdb.db: flink
@@ -673,6 +674,7 @@ metrics.reporter.influxdb.retentionPolicy: one_hour
 metrics.reporter.influxdb.consistency: ANY
 metrics.reporter.influxdb.connectTimeout: 60000
 metrics.reporter.influxdb.writeTimeout: 60000
+metrics.reporter.influxdb.interval: 60 SECONDS
 
 {% endhighlight %}
 
@@ -680,9 +682,6 @@ The reporter would send metrics using http protocol to the InfluxDB server with 
 All Flink metrics variables (see [List of all Variables](#list-of-all-variables)) are exported as InfluxDB tags.
 
 ### Prometheus (org.apache.flink.metrics.prometheus.PrometheusReporter)
-
-In order to use this reporter you must copy `/opt/flink-metrics-prometheus{{site.scala_version_suffix}}-{{site.version}}.jar` into the `/plugins/prometheus` folder
-of your Flink distribution.
 
 Parameters:
 
@@ -710,9 +709,6 @@ All Flink metrics variables (see [List of all Variables](#list-of-all-variables)
 
 ### PrometheusPushGateway (org.apache.flink.metrics.prometheus.PrometheusPushGatewayReporter)
 
-In order to use this reporter you must copy `/opt/flink-metrics-prometheus{{site.scala_version_suffix}}-{{site.version}}.jar` into the `/plugins/prometheus` folder
-of your Flink distribution.
-
 Parameters:
 
 {% include generated/prometheus_push_gateway_reporter_configuration.html %}
@@ -728,6 +724,7 @@ metrics.reporter.promgateway.jobName: myJob
 metrics.reporter.promgateway.randomJobNameSuffix: true
 metrics.reporter.promgateway.deleteOnShutdown: false
 metrics.reporter.promgateway.groupingKey: k1=v1;k2=v2
+metrics.reporter.promgateway.interval: 60 SECONDS
 
 {% endhighlight %}
 
@@ -736,9 +733,6 @@ The PrometheusPushGatewayReporter pushes metrics to a [Pushgateway](https://gith
 Please see the [Prometheus documentation](https://prometheus.io/docs/practices/pushing/) for use-cases.
 
 ### StatsD (org.apache.flink.metrics.statsd.StatsDReporter)
-
-In order to use this reporter you must copy `/opt/flink-metrics-statsd-{{site.version}}.jar` into the `/plugins/statsd` 
-folder of your Flink distribution.
 
 Parameters:
 
@@ -752,13 +746,11 @@ Example configuration:
 metrics.reporter.stsd.factory.class: org.apache.flink.metrics.statsd.StatsDReporterFactory
 metrics.reporter.stsd.host: localhost
 metrics.reporter.stsd.port: 8125
+metrics.reporter.stsd.interval: 60 SECONDS
 
 {% endhighlight %}
 
 ### Datadog (org.apache.flink.metrics.datadog.DatadogHttpReporter)
-
-In order to use this reporter you must copy `/opt/flink-metrics-datadog-{{site.version}}.jar` into the `/plugins/datadog` folder
-of your Flink distribution.
 
 Note any variables in Flink metrics, such as `<host>`, `<job_name>`, `<tm_id>`, `<subtask_index>`, `<task_name>`, and `<operator_name>`,
 will be sent to Datadog as tags. Tags will look like `host:localhost` and `job_name:myjobname`.
@@ -770,6 +762,7 @@ Parameters:
 - `proxyHost` - (optional) The proxy host to use when sending to Datadog.
 - `proxyPort` - (optional) The proxy port to use when sending to Datadog, defaults to 8080.
 - `dataCenter` - (optional) The data center (`EU`/`US`) to connect to, defaults to `US`.
+- `maxMetricsPerRequest` - (optional) The maximum number of metrics to include in each request, defaults to 2000.
 
 Example configuration:
 
@@ -780,15 +773,14 @@ metrics.reporter.dghttp.apikey: xxx
 metrics.reporter.dghttp.tags: myflinkapp,prod
 metrics.reporter.dghttp.proxyHost: my.web.proxy.com
 metrics.reporter.dghttp.proxyPort: 8080
-metrics.reporter.dhhttp.dataCenter: US
+metrics.reporter.dghttp.dataCenter: US
+metrics.reporter.dghttp.maxMetricsPerRequest: 2000
+metrics.reporter.dghttp.interval: 60 SECONDS
 
 {% endhighlight %}
 
 
 ### Slf4j (org.apache.flink.metrics.slf4j.Slf4jReporter)
-
-In order to use this reporter you must copy `/opt/flink-metrics-slf4j-{{site.version}}.jar` into the `/plugins/slf4j` folder
-of your Flink distribution.
 
 Example configuration:
 
@@ -1299,7 +1291,7 @@ Metrics related to data exchange between task executors using netty network comm
   </thead>
   <tbody>
     <tr>
-      <th rowspan="9"><strong>Job (only available on JobManager)</strong></th>
+      <th rowspan="8"><strong>Job (only available on JobManager)</strong></th>
       <td>lastCheckpointDuration</td>
       <td>The time it took to complete the last checkpoint (in milliseconds).</td>
       <td>Gauge</td>
@@ -1340,7 +1332,7 @@ Metrics related to data exchange between task executors using netty network comm
       <td>Gauge</td>
     </tr>
     <tr>
-      <th rowspan="2">Task</th>
+      <th rowspan="2"><strong>Task</strong></th>
       <td>checkpointAlignmentTime</td>
       <td>The time in nanoseconds that the last barrier alignment took to complete, or how long the current alignment has taken so far (in nanoseconds).</td>
       <td>Gauge</td>
@@ -1374,7 +1366,7 @@ Certain RocksDB native metrics are available but disabled by default, you can fi
       <td>Histogram</td>
     </tr>
     <tr>
-      <th rowspan="13"><strong>Task</strong></th>
+      <th rowspan="14"><strong>Task</strong></th>
       <td>numBytesInLocal</td>
       <td><span class="label label-danger">Attention:</span> deprecated, use <a href="{{ site.baseurl }}/monitoring/metrics.html#default-shuffle-service">Default shuffle service metrics</a>.</td>
       <td>Counter</td>
@@ -1479,19 +1471,11 @@ Certain RocksDB native metrics are available but disabled by default, you can fi
       <td>Gauge</td>
     </tr>
     <tr>
-      <th rowspan="4"><strong>Operator</strong></th>
-      <td>currentInput1Watermark</td>
+      <th rowspan="3"><strong>Operator</strong></th>
+      <td>currentInput<strong>N</strong>Watermark</td>
       <td>
-        The last watermark this operator has received in its first input (in milliseconds).
-        <p><strong>Note:</strong> Only for operators with 2 inputs.</p>
-      </td>
-      <td>Gauge</td>
-    </tr>
-    <tr>
-      <td>currentInput2Watermark</td>
-      <td>
-        The last watermark this operator has received in its second input (in milliseconds).
-        <p><strong>Note:</strong> Only for operators with 2 inputs.</p>
+        The last watermark this operator has received in its <strong>N'th</strong> input (in milliseconds), with index <strong>N</strong> starting from 1. For example currentInput<strong>1</strong>Watermark, currentInput<strong>2</strong>Watermark, ...
+        <p><strong>Note:</strong> Only for operators with 2 or more inputs.</p>
       </td>
       <td>Gauge</td>
     </tr>

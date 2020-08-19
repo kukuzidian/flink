@@ -20,6 +20,7 @@ package org.apache.flink.streaming.runtime.tasks;
 
 import org.apache.flink.api.common.ExecutionConfig;
 import org.apache.flink.api.common.typeinfo.BasicTypeInfo;
+import org.apache.flink.core.io.InputStatus;
 import org.apache.flink.metrics.Counter;
 import org.apache.flink.metrics.Gauge;
 import org.apache.flink.metrics.Metric;
@@ -44,7 +45,6 @@ import org.apache.flink.streaming.api.operators.StreamOperator;
 import org.apache.flink.streaming.api.operators.StreamOperatorParameters;
 import org.apache.flink.streaming.api.operators.co.CoStreamMap;
 import org.apache.flink.streaming.api.watermark.Watermark;
-import org.apache.flink.streaming.runtime.io.InputStatus;
 import org.apache.flink.streaming.runtime.io.StreamMultipleInputProcessor;
 import org.apache.flink.streaming.runtime.streamrecord.LatencyMarker;
 import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
@@ -81,7 +81,7 @@ public class MultipleInputStreamTaskTest {
 	@Test
 	public void testOpenCloseAndTimestamps() throws Exception {
 		try (StreamTaskMailboxTestHarness<String> testHarness =
-			new MultipleInputStreamTaskTestHarnessBuilder<>(MultipleInputStreamTask::new, BasicTypeInfo.STRING_TYPE_INFO)
+			new StreamTaskMailboxTestHarnessBuilder<>(MultipleInputStreamTask::new, BasicTypeInfo.STRING_TYPE_INFO)
 				.addInput(BasicTypeInfo.STRING_TYPE_INFO)
 				.addInput(BasicTypeInfo.INT_TYPE_INFO)
 				.addInput(BasicTypeInfo.DOUBLE_TYPE_INFO)
@@ -111,7 +111,7 @@ public class MultipleInputStreamTaskTest {
 	@Test
 	public void testCheckpointBarriers() throws Exception {
 		try (StreamTaskMailboxTestHarness<String> testHarness =
-			new MultipleInputStreamTaskTestHarnessBuilder<>(MultipleInputStreamTask::new, BasicTypeInfo.STRING_TYPE_INFO)
+			new StreamTaskMailboxTestHarnessBuilder<>(MultipleInputStreamTask::new, BasicTypeInfo.STRING_TYPE_INFO)
 				.addInput(BasicTypeInfo.STRING_TYPE_INFO, 2)
 				.addInput(BasicTypeInfo.INT_TYPE_INFO, 2)
 				.addInput(BasicTypeInfo.DOUBLE_TYPE_INFO, 2)
@@ -158,7 +158,7 @@ public class MultipleInputStreamTaskTest {
 	@Test
 	public void testOvertakingCheckpointBarriers() throws Exception {
 		try (StreamTaskMailboxTestHarness<String> testHarness =
-			new MultipleInputStreamTaskTestHarnessBuilder<>(MultipleInputStreamTask::new, BasicTypeInfo.STRING_TYPE_INFO)
+			new StreamTaskMailboxTestHarnessBuilder<>(MultipleInputStreamTask::new, BasicTypeInfo.STRING_TYPE_INFO)
 				.addInput(BasicTypeInfo.STRING_TYPE_INFO, 2)
 				.addInput(BasicTypeInfo.INT_TYPE_INFO, 2)
 				.addInput(BasicTypeInfo.DOUBLE_TYPE_INFO, 2)
@@ -219,7 +219,7 @@ public class MultipleInputStreamTaskTest {
 		};
 
 		try (StreamTaskMailboxTestHarness<String> testHarness =
-			new MultipleInputStreamTaskTestHarnessBuilder<>(MultipleInputStreamTask::new, BasicTypeInfo.STRING_TYPE_INFO)
+			new StreamTaskMailboxTestHarnessBuilder<>(MultipleInputStreamTask::new, BasicTypeInfo.STRING_TYPE_INFO)
 				.addInput(BasicTypeInfo.STRING_TYPE_INFO)
 				.addInput(BasicTypeInfo.STRING_TYPE_INFO)
 				.addInput(BasicTypeInfo.STRING_TYPE_INFO)
@@ -283,7 +283,7 @@ public class MultipleInputStreamTaskTest {
 	@Test
 	public void testClosingAllOperatorsOnChainProperly() throws Exception {
 		StreamTaskMailboxTestHarness<String> testHarness =
-			new MultipleInputStreamTaskTestHarnessBuilder<>(MultipleInputStreamTask::new, BasicTypeInfo.STRING_TYPE_INFO)
+			new StreamTaskMailboxTestHarnessBuilder<>(MultipleInputStreamTask::new, BasicTypeInfo.STRING_TYPE_INFO)
 				.addInput(BasicTypeInfo.STRING_TYPE_INFO)
 				.addInput(BasicTypeInfo.STRING_TYPE_INFO)
 				.addInput(BasicTypeInfo.STRING_TYPE_INFO)
@@ -330,7 +330,7 @@ public class MultipleInputStreamTaskTest {
 	@Test
 	public void testInputFairness() throws Exception {
 		try (StreamTaskMailboxTestHarness<String> testHarness =
-				new MultipleInputStreamTaskTestHarnessBuilder<>(MultipleInputStreamTask::new, BasicTypeInfo.STRING_TYPE_INFO)
+				new StreamTaskMailboxTestHarnessBuilder<>(MultipleInputStreamTask::new, BasicTypeInfo.STRING_TYPE_INFO)
 					.addInput(BasicTypeInfo.STRING_TYPE_INFO)
 					.addInput(BasicTypeInfo.STRING_TYPE_INFO)
 					.addInput(BasicTypeInfo.STRING_TYPE_INFO)
@@ -369,7 +369,7 @@ public class MultipleInputStreamTaskTest {
 	@Test
 	public void testWatermark() throws Exception {
 		try (StreamTaskMailboxTestHarness<String> testHarness =
-				new MultipleInputStreamTaskTestHarnessBuilder<>(MultipleInputStreamTask::new, BasicTypeInfo.STRING_TYPE_INFO)
+				new StreamTaskMailboxTestHarnessBuilder<>(MultipleInputStreamTask::new, BasicTypeInfo.STRING_TYPE_INFO)
 					.addInput(BasicTypeInfo.STRING_TYPE_INFO, 2)
 					.addInput(BasicTypeInfo.INT_TYPE_INFO, 2)
 					.addInput(BasicTypeInfo.DOUBLE_TYPE_INFO, 2)
@@ -441,7 +441,7 @@ public class MultipleInputStreamTaskTest {
 	@Test
 	public void testWatermarkAndStreamStatusForwarding() throws Exception {
 		try (StreamTaskMailboxTestHarness<String> testHarness =
-				new MultipleInputStreamTaskTestHarnessBuilder<>(MultipleInputStreamTask::new, BasicTypeInfo.STRING_TYPE_INFO)
+				new StreamTaskMailboxTestHarnessBuilder<>(MultipleInputStreamTask::new, BasicTypeInfo.STRING_TYPE_INFO)
 					.addInput(BasicTypeInfo.STRING_TYPE_INFO, 2)
 					.addInput(BasicTypeInfo.INT_TYPE_INFO, 2)
 					.addInput(BasicTypeInfo.DOUBLE_TYPE_INFO, 2)
@@ -502,7 +502,7 @@ public class MultipleInputStreamTaskTest {
 		};
 
 		try (StreamTaskMailboxTestHarness<String> testHarness =
-				new MultipleInputStreamTaskTestHarnessBuilder<>(MultipleInputStreamTask::new, BasicTypeInfo.STRING_TYPE_INFO)
+				new StreamTaskMailboxTestHarnessBuilder<>(MultipleInputStreamTask::new, BasicTypeInfo.STRING_TYPE_INFO)
 					.addInput(BasicTypeInfo.STRING_TYPE_INFO)
 					.addInput(BasicTypeInfo.INT_TYPE_INFO)
 					.addInput(BasicTypeInfo.DOUBLE_TYPE_INFO)
@@ -588,7 +588,7 @@ public class MultipleInputStreamTaskTest {
 		final TaskMetricGroup taskMetricGroup = new StreamTaskTestHarness.TestTaskMetricGroup(metrics);
 
 		try (StreamTaskMailboxTestHarness<String> testHarness =
-				new MultipleInputStreamTaskTestHarnessBuilder<>(MultipleInputStreamTask::new, BasicTypeInfo.STRING_TYPE_INFO)
+				new StreamTaskMailboxTestHarnessBuilder<>(MultipleInputStreamTask::new, BasicTypeInfo.STRING_TYPE_INFO)
 					.addInput(BasicTypeInfo.STRING_TYPE_INFO, 2)
 					.addInput(BasicTypeInfo.INT_TYPE_INFO, 2)
 					.addInput(BasicTypeInfo.DOUBLE_TYPE_INFO, 2)
@@ -610,7 +610,7 @@ public class MultipleInputStreamTaskTest {
 		final TaskMetricGroup taskMetricGroup = new StreamTaskTestHarness.TestTaskMetricGroup(metrics);
 
 		try (StreamTaskMailboxTestHarness<String> testHarness =
-				new MultipleInputStreamTaskTestHarnessBuilder<>(MultipleInputStreamTask::new, BasicTypeInfo.STRING_TYPE_INFO)
+				new StreamTaskMailboxTestHarnessBuilder<>(MultipleInputStreamTask::new, BasicTypeInfo.STRING_TYPE_INFO)
 					.addInput(BasicTypeInfo.STRING_TYPE_INFO)
 					.addInput(BasicTypeInfo.INT_TYPE_INFO)
 					.addInput(BasicTypeInfo.DOUBLE_TYPE_INFO)

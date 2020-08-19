@@ -30,6 +30,7 @@ import org.apache.flink.client.program.ClusterClientProvider;
 import org.apache.flink.configuration.ConfigUtils;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.DeploymentOptions;
+import org.apache.flink.configuration.DeploymentOptionsInternal;
 import org.apache.flink.configuration.GlobalConfiguration;
 import org.apache.flink.configuration.JobManagerOptions;
 import org.apache.flink.configuration.MemorySize;
@@ -38,13 +39,14 @@ import org.apache.flink.runtime.clusterframework.ApplicationStatus;
 import org.apache.flink.runtime.concurrent.ScheduledExecutorServiceAdapter;
 import org.apache.flink.runtime.security.SecurityConfiguration;
 import org.apache.flink.runtime.security.SecurityUtils;
+import org.apache.flink.util.ConfigurationException;
 import org.apache.flink.util.ExceptionUtils;
 import org.apache.flink.util.ExecutorUtils;
 import org.apache.flink.util.FlinkException;
 import org.apache.flink.util.ShutdownHookUtil;
 import org.apache.flink.yarn.YarnClusterDescriptor;
 import org.apache.flink.yarn.configuration.YarnConfigOptions;
-import org.apache.flink.yarn.configuration.YarnLogConfigUtil;
+import org.apache.flink.yarn.configuration.YarnDeploymentTarget;
 import org.apache.flink.yarn.executors.YarnJobClusterExecutor;
 import org.apache.flink.yarn.executors.YarnSessionClusterExecutor;
 
@@ -271,23 +273,25 @@ public class FlinkYarnSessionCli extends AbstractCustomCommandLine {
 		return new Path(userPath);
 	}
 
-	private void encodeDirsToShipToCluster(final Configuration configuration, final CommandLine cmd) {
+	private void encodeFilesToShipToCluster(final Configuration configuration, final CommandLine cmd) throws ConfigurationException {
 		checkNotNull(cmd);
 		checkNotNull(configuration);
 
 		if (cmd.hasOption(shipPath.getOpt())) {
+			String[] shipFiles = cmd.getOptionValues(this.shipPath.getOpt());
+
+			for (String path : shipFiles) {
+				final File shipFile = new File(path);
+				if (!shipFile.exists()) {
+					throw new ConfigurationException("Ship file " + path + " does not exist");
+				}
+			}
+
 			ConfigUtils.encodeArrayToConfig(
 					configuration,
-					YarnConfigOptions.SHIP_DIRECTORIES,
-					cmd.getOptionValues(this.shipPath.getOpt()),
-					(String path) -> {
-						final File shipDir = new File(path);
-						if (shipDir.isDirectory()) {
-							return path;
-						}
-						LOG.warn("Ship directory {} is not a directory. Ignoring it.", shipDir.getAbsolutePath());
-						return null;
-					});
+					YarnConfigOptions.SHIP_FILES,
+					shipFiles,
+					f -> f);
 		}
 	}
 
@@ -391,7 +395,7 @@ public class FlinkYarnSessionCli extends AbstractCustomCommandLine {
 		return null;
 	}
 
-	private void applyDescriptorOptionToConfig(final CommandLine commandLine, final Configuration configuration) {
+	private void applyDescriptorOptionToConfig(final CommandLine commandLine, final Configuration configuration) throws ConfigurationException {
 		checkNotNull(commandLine);
 		checkNotNull(configuration);
 
@@ -400,7 +404,7 @@ public class FlinkYarnSessionCli extends AbstractCustomCommandLine {
 			configuration.setString(YarnConfigOptions.FLINK_DIST_JAR, localJarPath.toString());
 		}
 
-		encodeDirsToShipToCluster(configuration, commandLine);
+		encodeFilesToShipToCluster(configuration, commandLine);
 
 		if (commandLine.hasOption(queue.getOpt())) {
 			final String queueName = commandLine.getOptionValue(queue.getOpt());
@@ -433,7 +437,7 @@ public class FlinkYarnSessionCli extends AbstractCustomCommandLine {
 			configuration.setString(YarnConfigOptions.NODE_LABEL, nodeLabelValue);
 		}
 
-		YarnLogConfigUtil.setLogConfigFileInConfig(configuration, configurationDirectory);
+		configuration.set(DeploymentOptionsInternal.CONF_DIR, configurationDirectory);
 	}
 
 	private boolean isYarnPropertiesFileMode(CommandLine commandLine) {
@@ -489,6 +493,7 @@ public class FlinkYarnSessionCli extends AbstractCustomCommandLine {
 
 		final Configuration configuration = applyCommandLineOptionsToConfiguration(cmd);
 		final ClusterClientFactory<ApplicationId> yarnClusterClientFactory = clusterClientServiceLoader.getClusterClientFactory(configuration);
+		configuration.set(DeploymentOptions.TARGET, YarnDeploymentTarget.SESSION.getName());
 
 		final YarnClusterDescriptor yarnClusterDescriptor = (YarnClusterDescriptor) yarnClusterClientFactory.createClusterDescriptor(configuration);
 
@@ -675,11 +680,6 @@ public class FlinkYarnSessionCli extends AbstractCustomCommandLine {
 		}
 
 		writeYarnProperties(yarnProps, yarnPropertiesFile);
-	}
-
-	private void logAndSysout(String message) {
-		LOG.info(message);
-		System.out.println(message);
 	}
 
 	private String encodeDynamicProperties(final CommandLine cmd) {

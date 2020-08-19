@@ -28,6 +28,7 @@ import org.apache.flink.table.functions.{FunctionContext, UserDefinedFunction}
 import org.apache.flink.table.planner.calcite.FlinkTypeFactory
 import org.apache.flink.table.planner.codegen.FunctionCodeGenerator.generateFunction
 import org.apache.flink.table.planner.plan.utils.PythonUtil.containsPythonCall
+import org.apache.flink.table.types.DataType
 import org.apache.flink.table.types.logical.RowType
 import org.apache.flink.table.util.TimestampStringUtils.fromLocalDateTime
 
@@ -72,7 +73,9 @@ class ExpressionReducer(
 
       // we don't support object literals yet, we skip those constant expressions
       case (SqlTypeName.ANY, _) |
+           (SqlTypeName.OTHER, _) |
            (SqlTypeName.ROW, _) |
+           (SqlTypeName.STRUCTURED, _) |
            (SqlTypeName.ARRAY, _) |
            (SqlTypeName.MAP, _) |
            (SqlTypeName.MULTISET, _) => None
@@ -133,7 +136,9 @@ class ExpressionReducer(
         unreduced.getType.getSqlTypeName match {
           // we insert the original expression for object literals
           case SqlTypeName.ANY |
+               SqlTypeName.OTHER |
                SqlTypeName.ROW |
+               SqlTypeName.STRUCTURED |
                SqlTypeName.ARRAY |
                SqlTypeName.MAP |
                SqlTypeName.MULTISET =>
@@ -272,5 +277,12 @@ class ConstantCodeGeneratorContext(tableConfig: TableConfig)
       functionContextClass: Class[_ <: FunctionContext] = classOf[FunctionContext],
       runtimeContextTerm: String = null): String = {
     super.addReusableFunction(function, classOf[ConstantFunctionContext], "parameters")
+  }
+
+  override def addReusableConverter(
+      dataType: DataType,
+      classLoaderTerm: String = null)
+    : String = {
+    super.addReusableConverter(dataType, "this.getClass().getClassLoader()")
   }
 }

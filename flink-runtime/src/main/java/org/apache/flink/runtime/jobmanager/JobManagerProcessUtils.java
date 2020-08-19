@@ -65,11 +65,11 @@ public class JobManagerProcessUtils {
 	private JobManagerProcessUtils() {
 	}
 
-	public static JobManagerProcessSpec processSpecFromConfigWithFallbackForLegacyHeap(
+	public static JobManagerProcessSpec processSpecFromConfigWithNewOptionToInterpretLegacyHeap(
 			Configuration config,
-			ConfigOption<MemorySize> newFallbackOptionForLegacyHeap) {
+			ConfigOption<MemorySize> newOptionToInterpretLegacyHeap) {
 		return processSpecFromConfig(
-			getConfigurationWithLegacyHeapSizeMappedToNewConfigOption(config, newFallbackOptionForLegacyHeap));
+			getConfigurationWithLegacyHeapSizeMappedToNewConfigOption(config, newOptionToInterpretLegacyHeap));
 	}
 
 	static JobManagerProcessSpec processSpecFromConfig(Configuration config) {
@@ -92,5 +92,11 @@ public class JobManagerProcessUtils {
 		Configuration configuration = new Configuration();
 		configuration.set(JobManagerOptions.TOTAL_PROCESS_MEMORY, MemorySize.ofMebiBytes(totalProcessMemoryMb));
 		return processSpecFromConfig(configuration);
+	}
+
+	public static String generateJvmParametersStr(JobManagerProcessSpec processSpec, Configuration configuration) {
+		return ProcessMemoryUtils.generateJvmParametersStr(
+			processSpec,
+			configuration.getBoolean(JobManagerOptions.JVM_DIRECT_MEMORY_LIMIT_ENABLED));
 	}
 }

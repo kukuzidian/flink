@@ -19,10 +19,24 @@
 package org.apache.flink.table.runtime.arrow;
 
 import org.apache.flink.annotation.Internal;
+import org.apache.flink.api.java.typeutils.TypeExtractor;
 import org.apache.flink.core.memory.ByteArrayOutputStreamWithPos;
+import org.apache.flink.table.api.Table;
+import org.apache.flink.table.api.TableEnvironment;
+import org.apache.flink.table.api.TableSchema;
+import org.apache.flink.table.api.bridge.java.BatchTableEnvironment;
+import org.apache.flink.table.api.internal.BatchTableEnvImpl;
+import org.apache.flink.table.api.internal.TableEnvImpl;
+import org.apache.flink.table.api.internal.TableEnvironmentImpl;
+import org.apache.flink.table.api.internal.TableImpl;
 import org.apache.flink.table.data.ArrayData;
 import org.apache.flink.table.data.RowData;
+import org.apache.flink.table.data.util.DataFormatConverters;
 import org.apache.flink.table.data.vector.ColumnVector;
+import org.apache.flink.table.delegation.Planner;
+import org.apache.flink.table.operations.OutputConversionModifyOperation;
+import org.apache.flink.table.planner.delegation.PlannerBase;
+import org.apache.flink.table.planner.sinks.SelectTableSinkSchemaConverter;
 import org.apache.flink.table.runtime.arrow.readers.ArrayFieldReader;
 import org.apache.flink.table.runtime.arrow.readers.ArrowFieldReader;
 import org.apache.flink.table.runtime.arrow.readers.BigIntFieldReader;
@@ -110,9 +124,14 @@ import org.apache.flink.table.types.logical.TinyIntType;
 import org.apache.flink.table.types.logical.VarBinaryType;
 import org.apache.flink.table.types.logical.VarCharType;
 import org.apache.flink.table.types.logical.utils.LogicalTypeDefaultVisitor;
+import org.apache.flink.table.types.utils.TypeConversions;
 import org.apache.flink.types.Row;
+import org.apache.flink.types.RowKind;
+
+import org.apache.flink.shaded.guava18.com.google.common.collect.LinkedHashMultiset;
 
 import org.apache.arrow.flatbuf.MessageHeader;
+import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.memory.RootAllocator;
 import org.apache.arrow.vector.BigIntVector;
 import org.apache.arrow.vector.BitVector;
@@ -135,6 +154,7 @@ import org.apache.arrow.vector.VarCharVector;
 import org.apache.arrow.vector.VectorSchemaRoot;
 import org.apache.arrow.vector.complex.ListVector;
 import org.apache.arrow.vector.complex.StructVector;
+import org.apache.arrow.vector.ipc.ArrowStreamWriter;
 import org.apache.arrow.vector.ipc.ReadChannel;
 import org.apache.arrow.vector.ipc.WriteChannel;
 import org.apache.arrow.vector.ipc.message.MessageMetadataResult;
@@ -146,7 +166,10 @@ import org.apache.arrow.vector.types.pojo.ArrowType;
 import org.apache.arrow.vector.types.pojo.Field;
 import org.apache.arrow.vector.types.pojo.FieldType;
 import org.apache.arrow.vector.types.pojo.Schema;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
+import java.io.ByteArrayOutputStream;
 import java.io.EOFException;
 import java.io.FileInputStream;
 import java.io.IOException;
@@ -157,6 +180,7 @@ import java.nio.channels.ReadableByteChannel;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.Iterator;
 import java.util.List;
 import java.util.stream.Collectors;
 
@@ -165,6 +189,8 @@ import java.util.stream.Collectors;
  */
 @Internal
 public final class ArrowUtils {
+
+	private static final Logger LOG = LoggerFactory.getLogger(ArrowUtils.class);
 
 	private static RootAllocator rootAllocator;
 
@@ -181,7 +207,7 @@ public final class ArrowUtils {
 		if (System.getProperty("io.netty.tryReflectionSetAccessible") == null) {
 			System.setProperty("io.netty.tryReflectionSetAccessible", "true");
 		} else if (!io.netty.util.internal.PlatformDependent.hasDirectBufferNoCleanerConstructor()) {
-			throw new RuntimeException("Vectorized Python UDF depends on " +
+			throw new RuntimeException("Arrow depends on " +
 				"DirectByteBuffer.<init>(long, int) which is not available. Please set the " +
 				"system property 'io.netty.tryReflectionSetAccessible' to 'true'.");
 		}
@@ -586,6 +612,163 @@ public final class ArrowUtils {
 					expected));
 			}
 		}
+	}
+
+	/**
+	 * Convert Flink table to Pandas DataFrame.
+	 */
+	public static CustomIterator<byte[]> collectAsPandasDataFrame(Table table, int maxArrowBatchSize) throws Exception {
+		checkArrowUsable();
+		BufferAllocator allocator = getRootAllocator().newChildAllocator("collectAsPandasDataFrame", 0, Long.MAX_VALUE);
+		RowType rowType = (RowType) table.getSchema().toRowDataType().getLogicalType();
+		VectorSchemaRoot root = VectorSchemaRoot.create(ArrowUtils.toArrowSchema(rowType), allocator);
+		ByteArrayOutputStream baos = new ByteArrayOutputStream();
+		ArrowStreamWriter arrowStreamWriter = new ArrowStreamWriter(root, null, baos);
+		arrowStreamWriter.start();
+
+		ArrowWriter arrowWriter;
+		Iterator<Row> results = table.execute().collect();
+		Iterator<Row> appendOnlyResults;
+		if (isAppendOnlyTable(table)) {
+			appendOnlyResults = results;
+		} else {
+			appendOnlyResults = filterOutRetractRows(results);
+		}
+
+		Iterator convertedResults;
+		if (isBlinkPlanner(table)) {
+			arrowWriter = createRowDataArrowWriter(root, rowType);
+			convertedResults = new Iterator<RowData>() {
+				@Override
+				public boolean hasNext() {
+					return appendOnlyResults.hasNext();
+				}
+
+				@Override
+				public RowData next() {
+					// The SelectTableSink of blink planner will convert the table schema and we
+					// need to keep the table schema used here be consistent with the converted table schema
+					TableSchema convertedTableSchema =
+						SelectTableSinkSchemaConverter.changeDefaultConversionClass(table.getSchema());
+					DataFormatConverters.DataFormatConverter converter =
+						DataFormatConverters.getConverterForDataType(convertedTableSchema.toRowDataType());
+					return (RowData) converter.toInternal(appendOnlyResults.next());
+				}
+			};
+		} else {
+			arrowWriter = createRowArrowWriter(root, rowType);
+			convertedResults = appendOnlyResults;
+		}
+
+		return new CustomIterator<byte[]>() {
+			@Override
+			public boolean hasNext() {
+				return convertedResults.hasNext();
+			}
+
+			@Override
+			public byte[] next() {
+				try {
+					int i = 0;
+					while (convertedResults.hasNext() && i < maxArrowBatchSize) {
+						i++;
+						arrowWriter.write(convertedResults.next());
+					}
+					arrowWriter.finish();
+					arrowStreamWriter.writeBatch();
+					return baos.toByteArray();
+				} catch (Throwable t) {
+					String msg = "Failed to serialize the data of the table";
+					LOG.error(msg, t);
+					throw new RuntimeException(msg, t);
+				} finally {
+					arrowWriter.reset();
+					baos.reset();
+
+					if (!hasNext()) {
+						root.close();
+						allocator.close();
+					}
+				}
+			}
+		};
+	}
+
+	private static Iterator<Row> filterOutRetractRows(Iterator<Row> data) {
+		LinkedHashMultiset<Row> result = LinkedHashMultiset.create();
+		while (data.hasNext()) {
+			Row element = data.next();
+			if (element.getKind() == RowKind.INSERT || element.getKind() == RowKind.UPDATE_AFTER) {
+				element.setKind(RowKind.INSERT);
+				result.add(element);
+			} else {
+				element.setKind(RowKind.INSERT);
+				if (!result.remove(element)) {
+					throw new RuntimeException(
+						String.format("Could not remove element '%s', should never happen.", element));
+				}
+			}
+		}
+		return result.iterator();
+	}
+
+	private static boolean isBlinkPlanner(Table table) {
+		TableEnvironment tableEnv = ((TableImpl) table).getTableEnvironment();
+		if (tableEnv instanceof TableEnvImpl) {
+			return false;
+		} else if (tableEnv instanceof TableEnvironmentImpl) {
+			Planner planner = ((TableEnvironmentImpl) tableEnv).getPlanner();
+			return planner instanceof PlannerBase;
+		} else {
+			throw new RuntimeException(String.format(
+				"Could not determine the planner type for table environment class %s.", tableEnv.getClass()));
+		}
+	}
+
+	private static boolean isStreamingMode(Table table) throws Exception {
+		TableEnvironment tableEnv = ((TableImpl) table).getTableEnvironment();
+		if (tableEnv instanceof BatchTableEnvironment || tableEnv instanceof BatchTableEnvImpl) {
+			return false;
+		} else if (tableEnv instanceof TableEnvironmentImpl) {
+			java.lang.reflect.Field isStreamingModeMethod = TableEnvironmentImpl.class.getDeclaredField("isStreamingMode");
+			isStreamingModeMethod.setAccessible(true);
+			return (boolean) isStreamingModeMethod.get(tableEnv);
+		} else {
+			throw new RuntimeException(String.format(
+				"Could not determine the streaming mode for table environment class %s", tableEnv.getClass()));
+		}
+	}
+
+	private static boolean isAppendOnlyTable(Table table) throws Exception {
+		if (isStreamingMode(table)) {
+			TableEnvironmentImpl tableEnv = (TableEnvironmentImpl) ((TableImpl) table).getTableEnvironment();
+			try {
+				OutputConversionModifyOperation modifyOperation = new OutputConversionModifyOperation(
+					table.getQueryOperation(),
+					TypeConversions.fromLegacyInfoToDataType(TypeExtractor.createTypeInfo(Row.class)),
+					OutputConversionModifyOperation.UpdateMode.APPEND);
+				tableEnv.getPlanner().translate(Collections.singletonList(modifyOperation));
+			} catch (Throwable t) {
+				if (t.getMessage().contains("doesn't support consuming update changes") ||
+						t.getMessage().contains("Table is not an append-only table")) {
+					return false;
+				} else {
+					throw new RuntimeException("Failed to determine whether the given table is append only.", t);
+				}
+			}
+		}
+		return true;
+	}
+
+	/**
+	 * A custom iterator to bypass the Py4J Java collection as the next method of
+	 * py4j.java_collections.JavaIterator will eat all the exceptions thrown in Java
+	 * which makes it difficult to debug in case of errors.
+	 */
+	private interface CustomIterator<T> {
+		boolean hasNext();
+
+		T next();
 	}
 
 	private static class LogicalTypeToArrowTypeConverter extends LogicalTypeDefaultVisitor<ArrowType> {

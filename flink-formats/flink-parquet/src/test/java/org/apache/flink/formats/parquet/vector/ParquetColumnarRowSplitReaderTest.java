@@ -168,14 +168,20 @@ public class ParquetColumnarRowSplitReaderTest {
 
 		// test reading and splitting
 		long fileLen = testPath.getFileSystem().getFileStatus(testPath).getLen();
-		int len1 = readSplitAndCheck(0, testPath, 0, fileLen / 3, values);
-		int len2 = readSplitAndCheck(len1, testPath, fileLen / 3, fileLen * 2 / 3, values);
-		int len3 = readSplitAndCheck(len1 + len2, testPath, fileLen * 2 / 3, Long.MAX_VALUE, values);
+		int len1 = readSplitAndCheck(0, 0, testPath, 0, fileLen / 3, values);
+		int len2 = readSplitAndCheck(len1, 0, testPath, fileLen / 3, fileLen * 2 / 3, values);
+		int len3 = readSplitAndCheck(len1 + len2, 0, testPath, fileLen * 2 / 3, Long.MAX_VALUE, values);
 		assertEquals(number, len1 + len2 + len3);
+
+		// test seek
+		assertEquals(
+				number - number / 2,
+				readSplitAndCheck(number / 2, number / 2, testPath, 0, fileLen, values));
 	}
 
 	private int readSplitAndCheck(
 			int start,
+			long seekToRow,
 			Path testPath,
 			long splitStart,
 			long splitLength,
@@ -199,6 +205,7 @@ public class ParquetColumnarRowSplitReaderTest {
 
 		ParquetColumnarRowSplitReader reader = new ParquetColumnarRowSplitReader(
 				false,
+				true,
 				new Configuration(),
 				fieldTypes,
 				new String[] {
@@ -209,6 +216,7 @@ public class ParquetColumnarRowSplitReaderTest {
 				new org.apache.hadoop.fs.Path(testPath.getPath()),
 				splitStart,
 				splitLength);
+		reader.seekToRow(seekToRow);
 
 		int i = start;
 		while (!reader.reachedEnd()) {
@@ -395,6 +403,7 @@ public class ParquetColumnarRowSplitReaderTest {
 				new IntType()};
 		ParquetColumnarRowSplitReader reader = new ParquetColumnarRowSplitReader(
 				false,
+				true,
 				new Configuration(),
 				fieldTypes,
 				new String[] {"f7", "f2", "f4"},
@@ -487,6 +496,7 @@ public class ParquetColumnarRowSplitReaderTest {
 				new VarCharType(VarCharType.MAX_LENGTH)};
 		ParquetColumnarRowSplitReader reader = ParquetSplitReaderUtil.genPartColumnarRowReader(
 				false,
+				true,
 				new Configuration(),
 				IntStream.range(0, 28).mapToObj(i -> "f" + i).toArray(String[]::new),
 				Arrays.stream(fieldTypes)

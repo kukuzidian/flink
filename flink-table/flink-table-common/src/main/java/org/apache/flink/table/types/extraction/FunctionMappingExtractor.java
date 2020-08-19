@@ -33,6 +33,8 @@ import javax.annotation.Nullable;
 
 import java.lang.reflect.Method;
 import java.lang.reflect.Parameter;
+import java.lang.reflect.ParameterizedType;
+import java.lang.reflect.Type;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -47,7 +49,7 @@ import static org.apache.flink.table.types.extraction.ExtractionUtils.collectMet
 import static org.apache.flink.table.types.extraction.ExtractionUtils.createMethodSignatureString;
 import static org.apache.flink.table.types.extraction.ExtractionUtils.extractionError;
 import static org.apache.flink.table.types.extraction.ExtractionUtils.isAssignable;
-import static org.apache.flink.table.types.extraction.ExtractionUtils.isMethodInvokable;
+import static org.apache.flink.table.types.extraction.ExtractionUtils.isInvokable;
 import static org.apache.flink.table.types.extraction.TemplateUtils.extractGlobalFunctionTemplates;
 import static org.apache.flink.table.types.extraction.TemplateUtils.extractLocalFunctionTemplates;
 import static org.apache.flink.table.types.extraction.TemplateUtils.findInputOnlyTemplates;
@@ -156,11 +158,13 @@ final class FunctionMappingExtractor {
 		}
 		for (Method method : methods) {
 			try {
+				final Method correctMethod = correctVarArgMethod(method);
+
 				final Map<FunctionSignatureTemplate, FunctionResultTemplate> collectedMappingsPerMethod =
-					collectMethodMappings(method, global, globalResultOnly, resultExtraction, accessor);
+					collectMethodMappings(correctMethod, global, globalResultOnly, resultExtraction, accessor);
 
 				// check if the method can be called
-				verifyMappingForMethod(method, collectedMappingsPerMethod, verification);
+				verifyMappingForMethod(correctMethod, collectedMappingsPerMethod, verification);
 
 				// check if method strategies conflict with function strategies
 				collectedMappingsPerMethod.forEach((signature, result) -> putMapping(collectedMappings, signature, result));
@@ -172,6 +176,39 @@ final class FunctionMappingExtractor {
 			}
 		}
 		return collectedMappings;
+	}
+
+	/**
+	 * Special case for Scala which generates two methods when using var-args (a {@code Seq < String >}
+	 * and {@code String...}). This method searches for the Java-like variant.
+	 */
+	private static Method correctVarArgMethod(Method method) {
+		final int paramCount = method.getParameterCount();
+		final Class<?>[] paramClasses = method.getParameterTypes();
+		if (paramCount > 0 && paramClasses[paramCount - 1].getName().equals("scala.collection.Seq")) {
+			final Type[] paramTypes = method.getGenericParameterTypes();
+			final ParameterizedType seqType = (ParameterizedType) paramTypes[paramCount - 1];
+			final Type varArgType = seqType.getActualTypeArguments()[0];
+			return ExtractionUtils.collectMethods(method.getDeclaringClass(), method.getName())
+				.stream()
+				.filter(Method::isVarArgs)
+				.filter(candidate -> candidate.getParameterCount() == paramCount)
+				.filter(candidate -> {
+					final Type[] candidateParamTypes = candidate.getGenericParameterTypes();
+					for (int i = 0; i < paramCount - 1; i++) {
+						if (candidateParamTypes[i] != paramTypes[i]) {
+							return false;
+						}
+					}
+					final Class<?> candidateVarArgType = candidate.getParameterTypes()[paramCount - 1];
+					return candidateVarArgType.isArray() &&
+						// check for Object is needed in case of Scala primitives (e.g. Int)
+						(varArgType == Object.class || candidateVarArgType.getComponentType() == varArgType);
+				})
+				.findAny()
+				.orElse(method);
+		}
+		return method;
 	}
 
 	/**
@@ -368,7 +405,7 @@ final class FunctionMappingExtractor {
 				return FunctionArgumentTemplate.of(((CollectionDataType) type).getElementDataType());
 			}
 			// special case for varargs that have been misinterpreted as BYTES
-			else {
+			else if (type.equals(DataTypes.BYTES())) {
 				return FunctionArgumentTemplate.of(DataTypes.TINYINT().notNull().bridgedTo(byte.class));
 			}
 		}
@@ -419,7 +456,7 @@ final class FunctionMappingExtractor {
 		return (method, signature, result) -> {
 			final Class<?>[] parameters = signature.toArray(new Class[0]);
 			final Class<?> returnType = method.getReturnType();
-			final boolean isValid = isMethodInvokable(method, parameters) &&
+			final boolean isValid = isInvokable(method, parameters) &&
 				isAssignable(result, returnType, true);
 			if (!isValid) {
 				throw createMethodNotFoundError(method.getName(), parameters, result);
@@ -449,7 +486,7 @@ final class FunctionMappingExtractor {
 		return (method, signature, result) -> {
 			final Class<?>[] parameters = Stream.concat(Stream.of(argumentClass), signature.stream())
 				.toArray(Class<?>[]::new);
-			if (!isMethodInvokable(method, parameters)) {
+			if (!isInvokable(method, parameters)) {
 				throw createMethodNotFoundError(method.getName(), parameters, null);
 			}
 		};
@@ -461,7 +498,7 @@ final class FunctionMappingExtractor {
 	static MethodVerification createParameterVerification() {
 		return (method, signature, result) -> {
 			final Class<?>[] parameters = signature.toArray(new Class[0]);
-			if (!isMethodInvokable(method, parameters)) {
+			if (!isInvokable(method, parameters)) {
 				throw createMethodNotFoundError(method.getName(), parameters, null);
 			}
 		};

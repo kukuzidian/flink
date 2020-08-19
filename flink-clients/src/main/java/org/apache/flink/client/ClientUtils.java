@@ -40,9 +40,11 @@ import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.net.URL;
+import java.net.URLClassLoader;
 import java.util.List;
 import java.util.concurrent.ExecutionException;
 
+import static org.apache.flink.util.FlinkUserCodeClassLoader.NOOP_EXCEPTION_HANDLER;
 import static org.apache.flink.util.Preconditions.checkNotNull;
 
 /**
@@ -53,7 +55,7 @@ public enum ClientUtils {
 
 	private static final Logger LOG = LoggerFactory.getLogger(ClientUtils.class);
 
-	public static ClassLoader buildUserCodeClassLoader(
+	public static URLClassLoader buildUserCodeClassLoader(
 			List<URL> jars,
 			List<URL> classpaths,
 			ClassLoader parent,
@@ -70,7 +72,14 @@ public enum ClientUtils {
 			configuration.getString(CoreOptions.CLASSLOADER_RESOLVE_ORDER);
 		FlinkUserCodeClassLoaders.ResolveOrder resolveOrder =
 			FlinkUserCodeClassLoaders.ResolveOrder.fromString(classLoaderResolveOrder);
-		return FlinkUserCodeClassLoaders.create(resolveOrder, urls, parent, alwaysParentFirstLoaderPatterns);
+		final boolean checkClassloaderLeak = configuration.getBoolean(CoreOptions.CHECK_LEAKED_CLASSLOADER);
+		return FlinkUserCodeClassLoaders.create(
+			resolveOrder,
+			urls,
+			parent,
+			alwaysParentFirstLoaderPatterns,
+			NOOP_EXCEPTION_HANDLER,
+			checkClassloaderLeak);
 	}
 
 	public static JobExecutionResult submitJob(

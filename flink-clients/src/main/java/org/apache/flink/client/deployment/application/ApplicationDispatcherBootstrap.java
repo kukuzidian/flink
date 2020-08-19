@@ -23,15 +23,16 @@ import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.common.JobID;
 import org.apache.flink.api.common.time.Time;
 import org.apache.flink.client.ClientUtils;
+import org.apache.flink.client.cli.ClientOptions;
 import org.apache.flink.client.deployment.application.executors.EmbeddedExecutor;
 import org.apache.flink.client.deployment.application.executors.EmbeddedExecutorServiceLoader;
 import org.apache.flink.client.program.PackagedProgram;
 import org.apache.flink.configuration.Configuration;
-import org.apache.flink.configuration.ExecutionOptions;
 import org.apache.flink.configuration.PipelineOptionsInternal;
 import org.apache.flink.core.execution.PipelineExecutorServiceLoader;
 import org.apache.flink.runtime.client.JobCancellationException;
 import org.apache.flink.runtime.clusterframework.ApplicationStatus;
+import org.apache.flink.runtime.concurrent.FutureUtils;
 import org.apache.flink.runtime.concurrent.ScheduledExecutor;
 import org.apache.flink.runtime.dispatcher.AbstractDispatcherBootstrap;
 import org.apache.flink.runtime.dispatcher.Dispatcher;
@@ -58,7 +59,6 @@ import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
 import java.util.stream.Collectors;
-import java.util.stream.Stream;
 
 import static org.apache.flink.util.Preconditions.checkNotNull;
 
@@ -251,19 +251,11 @@ public class ApplicationDispatcherBootstrap extends AbstractDispatcherBootstrap 
 			final DispatcherGateway dispatcherGateway,
 			final Collection<JobID> applicationJobIds,
 			final ScheduledExecutor executor) {
-		final CompletableFuture<?>[] jobResultFutures = applicationJobIds
+		final List<CompletableFuture<?>> jobResultFutures = applicationJobIds
 				.stream()
-				.map(jobId ->
-						unwrapJobResultException(getJobResult(dispatcherGateway, jobId, executor)))
-				.toArray(CompletableFuture<?>[]::new);
-
-		final CompletableFuture<Void> allStatusFutures = CompletableFuture.allOf(jobResultFutures);
-		Stream.of(jobResultFutures)
-				.forEach(f -> f.exceptionally(e -> {
-					allStatusFutures.completeExceptionally(e);
-					return null;
-				}));
-		return allStatusFutures;
+				.map(jobId -> unwrapJobResultException(getJobResult(dispatcherGateway, jobId, executor)))
+				.collect(Collectors.toList());
+		return FutureUtils.waitForAll(jobResultFutures);
 	}
 
 	private CompletableFuture<JobResult> getJobResult(
@@ -271,8 +263,8 @@ public class ApplicationDispatcherBootstrap extends AbstractDispatcherBootstrap 
 			final JobID jobId,
 			final ScheduledExecutor scheduledExecutor) {
 
-		final Time timeout = Time.milliseconds(configuration.get(ExecutionOptions.EMBEDDED_RPC_TIMEOUT).toMillis());
-		final Time retryPeriod = Time.milliseconds(configuration.get(ExecutionOptions.EMBEDDED_RPC_RETRY_PERIOD).toMillis());
+		final Time timeout = Time.milliseconds(configuration.get(ClientOptions.CLIENT_TIMEOUT).toMillis());
+		final Time retryPeriod = Time.milliseconds(configuration.get(ClientOptions.CLIENT_RETRY_PERIOD).toMillis());
 
 		return JobStatusPollingUtils.getJobResult(
 						dispatcherGateway, jobId, scheduledExecutor, timeout, retryPeriod);

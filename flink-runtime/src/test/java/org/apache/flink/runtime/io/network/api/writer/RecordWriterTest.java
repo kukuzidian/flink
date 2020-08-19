@@ -25,6 +25,7 @@ import org.apache.flink.core.memory.DataOutputView;
 import org.apache.flink.core.memory.MemorySegment;
 import org.apache.flink.runtime.checkpoint.CheckpointOptions;
 import org.apache.flink.runtime.checkpoint.channel.ChannelStateReader;
+import org.apache.flink.runtime.checkpoint.channel.InputChannelInfo;
 import org.apache.flink.runtime.event.AbstractEvent;
 import org.apache.flink.runtime.io.network.api.CheckpointBarrier;
 import org.apache.flink.runtime.io.network.api.EndOfPartitionEvent;
@@ -412,7 +413,7 @@ public class RecordWriterTest {
 	@Test
 	public void testIsAvailableOrNot() throws Exception {
 		// setup
-		final NetworkBufferPool globalPool = new NetworkBufferPool(10, 128, 2);
+		final NetworkBufferPool globalPool = new NetworkBufferPool(10, 128);
 		final BufferPool localPool = globalPool.createBufferPool(1, 1, null, 1, Integer.MAX_VALUE);
 		final ResultPartitionWriter resultPartition = new ResultPartitionBuilder()
 			.setBufferPoolFactory(p -> localPool)
@@ -454,7 +455,7 @@ public class RecordWriterTest {
 		final int[] records = {5, 6, 7, 8};
 		final int bufferSize = states.length * Integer.BYTES;
 
-		final NetworkBufferPool globalPool = new NetworkBufferPool(totalBuffers, bufferSize, 1);
+		final NetworkBufferPool globalPool = new NetworkBufferPool(totalBuffers, bufferSize);
 		final ChannelStateReader stateReader = new ResultPartitionTest.FiniteChannelStateReader(totalStates, states);
 		final ResultPartition partition = new ResultPartitionBuilder()
 			.setNetworkBufferPool(globalPool)
@@ -506,7 +507,7 @@ public class RecordWriterTest {
 	@Test
 	public void testIdleTime() throws IOException, InterruptedException {
 		// setup
-		final NetworkBufferPool globalPool = new NetworkBufferPool(10, 128, 2);
+		final NetworkBufferPool globalPool = new NetworkBufferPool(10, 128);
 		final BufferPool localPool = globalPool.createBufferPool(1, 1, null, 1, Integer.MAX_VALUE);
 		final ResultPartitionWriter resultPartition = new ResultPartitionBuilder()
 			.setBufferPoolFactory(p -> localPool)
@@ -519,8 +520,9 @@ public class RecordWriterTest {
 			new NoOpResultPartitionConsumableNotifier());
 		final RecordWriter recordWriter = createRecordWriter(partitionWrapper);
 		BufferBuilder builder = recordWriter.requestNewBufferBuilder(0);
-		final Buffer buffer = BufferBuilderTestUtils.buildSingleBuffer(builder);
-		builder.finish();
+		BufferBuilderTestUtils.fillBufferBuilder(builder, 1).finish();
+		ResultSubpartitionView readView = resultPartition.getSubpartition(0).createReadView(new NoOpBufferAvailablityListener());
+		Buffer buffer = readView.getNextBuffer().buffer();
 
 		// idle time is zero when there is buffer available.
 		assertEquals(0, recordWriter.getIdleTimeMsPerSecond().getCount());
@@ -656,12 +658,12 @@ public class RecordWriterTest {
 	static BufferOrEvent parseBuffer(BufferConsumer bufferConsumer, int targetChannel) throws IOException {
 		Buffer buffer = buildSingleBuffer(bufferConsumer);
 		if (buffer.isBuffer()) {
-			return new BufferOrEvent(buffer, targetChannel);
+			return new BufferOrEvent(buffer, new InputChannelInfo(0, targetChannel));
 		} else {
 			// is event:
 			AbstractEvent event = EventSerializer.fromBuffer(buffer, RecordWriterTest.class.getClassLoader());
 			buffer.recycleBuffer(); // the buffer is not needed anymore
-			return new BufferOrEvent(event, targetChannel);
+			return new BufferOrEvent(event, new InputChannelInfo(0, targetChannel));
 		}
 	}
 
@@ -686,11 +688,11 @@ public class RecordWriterTest {
 		}
 	}
 
-	private static class KeepingPartitionWriter extends MockResultPartitionWriter {
+	static class KeepingPartitionWriter extends MockResultPartitionWriter {
 		private final BufferProvider bufferProvider;
 		private Map<Integer, List<BufferConsumer>> produced = new HashMap<>();
 
-		private KeepingPartitionWriter(BufferProvider bufferProvider) {
+		KeepingPartitionWriter(BufferProvider bufferProvider) {
 			this.bufferProvider = bufferProvider;
 		}
 
@@ -710,6 +712,10 @@ public class RecordWriterTest {
 			produced.putIfAbsent(targetChannel, new ArrayList<>());
 			produced.get(targetChannel).add(bufferConsumer);
 			return true;
+		}
+
+		public List<BufferConsumer> getAddedBufferConsumers(int subpartitionIndex) {
+			return produced.get(subpartitionIndex);
 		}
 
 		@Override

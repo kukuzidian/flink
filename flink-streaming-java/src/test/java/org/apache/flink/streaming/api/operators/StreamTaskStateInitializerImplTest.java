@@ -178,16 +178,16 @@ public class StreamTaskStateInitializerImplTest {
 					new OperatorStateHandle.StateMetaInfo(
 						new long[]{0, 10},
 						OperatorStateHandle.Mode.SPLIT_DISTRIBUTE)),
-				CheckpointTestUtils.createDummyStreamStateHandle(random)),
+				CheckpointTestUtils.createDummyStreamStateHandle(random, null)),
 			new OperatorStreamStateHandle(
 				Collections.singletonMap(
 					"_default_",
 					new OperatorStateHandle.StateMetaInfo(
 						new long[]{0, 20, 30},
 						OperatorStateHandle.Mode.SPLIT_DISTRIBUTE)),
-				CheckpointTestUtils.createDummyStreamStateHandle(random)),
-			CheckpointTestUtils.createDummyKeyGroupStateHandle(random),
-			CheckpointTestUtils.createDummyKeyGroupStateHandle(random),
+				CheckpointTestUtils.createDummyStreamStateHandle(random, null)),
+			CheckpointTestUtils.createDummyKeyGroupStateHandle(random, null),
+			CheckpointTestUtils.createDummyKeyGroupStateHandle(random, null),
 			singleton(createNewInputChannelStateHandle(10, random)),
 			singleton(createNewResultSubpartitionStateHandle(10, random)));
 
@@ -260,7 +260,7 @@ public class StreamTaskStateInitializerImplTest {
 		boolean createTimerServiceManager) {
 
 		JobID jobID = new JobID(42L, 43L);
-		ExecutionAttemptID executionAttemptID = new ExecutionAttemptID(23L, 24L);
+		ExecutionAttemptID executionAttemptID = new ExecutionAttemptID();
 		TestCheckpointResponder checkpointResponderMock = new TestCheckpointResponder();
 
 		TaskLocalStateStore taskLocalStateStore = new TestTaskLocalStateStore();

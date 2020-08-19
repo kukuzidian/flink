@@ -20,10 +20,8 @@ package org.apache.flink.table.planner.runtime.utils;
 
 import org.apache.flink.api.common.typeinfo.BasicTypeInfo;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
-import org.apache.flink.api.common.typeinfo.Types;
-import org.apache.flink.api.java.tuple.Tuple2;
+import org.apache.flink.table.annotation.DataTypeHint;
 import org.apache.flink.table.data.TimestampData;
-import org.apache.flink.table.functions.AggregateFunction;
 import org.apache.flink.table.functions.FunctionContext;
 import org.apache.flink.table.functions.ScalarFunction;
 import org.apache.flink.table.functions.python.PythonEnv;
@@ -41,35 +39,6 @@ import static org.junit.Assert.fail;
  * Test scalar functions.
  */
 public class JavaUserDefinedScalarFunctions {
-
-	/**
-	 * Accumulator for test requiresOver.
-	 */
-	public static class AccumulatorOver extends Tuple2<Long, Integer> {}
-
-	/**
-	 * Test for requiresOver.
-	 */
-	public static class OverAgg0 extends AggregateFunction<Long, AccumulatorOver> {
-		@Override
-		public AccumulatorOver createAccumulator() {
-			return new AccumulatorOver();
-		}
-
-		@Override
-		public Long getValue(AccumulatorOver accumulator) {
-			return 1L;
-		}
-
-		//Overloaded accumulate method
-		public void accumulate(AccumulatorOver accumulator, long iValue, int iWeight) {
-		}
-
-		@Override
-		public boolean requiresOver() {
-			return true;
-		}
-	}
 
 	/**
 	 * Increment input.
@@ -140,7 +109,9 @@ public class JavaUserDefinedScalarFunctions {
 			openCalled = true;
 		}
 
-		public Timestamp eval(TimestampData timestampData, Integer offset) {
+		public @DataTypeHint("TIMESTAMP(3)") Timestamp eval(
+				@DataTypeHint("TIMESTAMP(3)") TimestampData timestampData,
+				Integer offset) {
 			if (!openCalled) {
 				fail("Open was not called before run.");
 			}
@@ -151,11 +122,6 @@ public class JavaUserDefinedScalarFunctions {
 				int tzOffset = TimeZone.getDefault().getOffset(ts);
 				return new Timestamp(ts - tzOffset);
 			}
-		}
-
-		@Override
-		public TypeInformation<?> getResultType(Class<?>[] signature) {
-			return Types.SQL_TIMESTAMP;
 		}
 
 		@Override

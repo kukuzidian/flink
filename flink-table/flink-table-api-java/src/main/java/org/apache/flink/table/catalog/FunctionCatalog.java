@@ -30,15 +30,14 @@ import org.apache.flink.table.delegation.PlannerTypeInferenceUtil;
 import org.apache.flink.table.functions.AggregateFunction;
 import org.apache.flink.table.functions.AggregateFunctionDefinition;
 import org.apache.flink.table.functions.FunctionDefinition;
-import org.apache.flink.table.functions.FunctionDefinitionUtil;
 import org.apache.flink.table.functions.FunctionIdentifier;
+import org.apache.flink.table.functions.ImperativeAggregateFunction;
 import org.apache.flink.table.functions.ScalarFunction;
 import org.apache.flink.table.functions.ScalarFunctionDefinition;
 import org.apache.flink.table.functions.TableAggregateFunction;
 import org.apache.flink.table.functions.TableAggregateFunctionDefinition;
 import org.apache.flink.table.functions.TableFunction;
 import org.apache.flink.table.functions.TableFunctionDefinition;
-import org.apache.flink.table.functions.UserDefinedAggregateFunction;
 import org.apache.flink.table.functions.UserDefinedFunction;
 import org.apache.flink.table.functions.UserDefinedFunctionHelper;
 import org.apache.flink.table.module.ModuleManager;
@@ -388,6 +387,10 @@ public final class FunctionCatalog {
 		);
 	}
 
+	/**
+	 * @deprecated Use {@link #registerTemporarySystemFunction(String, FunctionDefinition, boolean)} instead.
+	 */
+	@Deprecated
 	public <T> void registerTempSystemTableFunction(
 			String name,
 			TableFunction<T> function,
@@ -403,9 +406,13 @@ public final class FunctionCatalog {
 		);
 	}
 
+	/**
+	 * @deprecated Use {@link #registerTemporarySystemFunction(String, FunctionDefinition, boolean)} instead.
+	 */
+	@Deprecated
 	public <T, ACC> void registerTempSystemAggregateFunction(
 			String name,
-			UserDefinedAggregateFunction<T, ACC> function,
+			ImperativeAggregateFunction<T, ACC> function,
 			TypeInformation<T> resultType,
 			TypeInformation<ACC> accType) {
 		UserDefinedFunctionHelper.prepareInstance(config, function);
@@ -433,6 +440,10 @@ public final class FunctionCatalog {
 		);
 	}
 
+	/**
+	 * @deprecated Use {@link #registerTemporaryCatalogFunction(UnresolvedIdentifier, FunctionDefinition, boolean)} instead.
+	 */
+	@Deprecated
 	public void registerTempCatalogScalarFunction(ObjectIdentifier oi, ScalarFunction function) {
 		UserDefinedFunctionHelper.prepareInstance(config, function);
 
@@ -572,8 +583,7 @@ public final class FunctionCatalog {
 					fd = catalog.getFunctionDefinitionFactory().get()
 						.createFunctionDefinition(oi.getObjectName(), catalogFunction);
 				} else {
-					// TODO update the FunctionDefinitionUtil once we drop the old function stack in DDL
-					fd = getFunctionDefinition(oi.getObjectName(), catalogFunction);
+					fd = getFunctionDefinition(oi.asSummaryString(), catalogFunction);
 				}
 
 				return Optional.of(
@@ -639,12 +649,11 @@ public final class FunctionCatalog {
 			// directly.
 			return ((InlineCatalogFunction) function).getDefinition();
 		}
-		// Currently the uninstantiated functions are all from sql and catalog that use the old type inference,
-		// so using FunctionDefinitionUtil to instantiate them and wrap them with `ScalarFunctionDefinition`,
-		// `TableFunctionDefinition`, etc. If the new type inference is fully functional, this should be
-		// changed to use `UserDefinedFunctionHelper#instantiateFunction`.
-		return FunctionDefinitionUtil.createFunctionDefinition(
-			name, function.getClassName(), function.getFunctionLanguage(), config);
+		return UserDefinedFunctionHelper.instantiateFunction(
+			Thread.currentThread().getContextClassLoader(), // TODO use classloader of catalog manager in the future
+			config,
+			name,
+			function);
 	}
 
 	/**

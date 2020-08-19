@@ -26,36 +26,14 @@ LOCAL_OUTPUT_PATH="${TEST_DATA_DIR}/out/wc_out"
 OUTPUT_PATH="/tmp/wc_out"
 ARGS="--output ${OUTPUT_PATH}"
 
-SUCCEEDED=1
-
-function cleanup {
-    if [ $SUCCEEDED != 0 ];then
-      debug_and_show_logs
-    fi
+function internal_cleanup {
     kubectl delete deployment ${CLUSTER_ID}
     kubectl delete clusterrolebinding ${CLUSTER_ROLE_BINDING}
-    stop_kubernetes
 }
-
-function setConsoleLogging {
-    cat >> $FLINK_DIR/conf/log4j.properties <<END
-rootLogger.appenderRef.console.ref = ConsoleAppender
-
-# Log all infos to the console
-appender.console.name = ConsoleAppender
-appender.console.type = CONSOLE
-appender.console.layout.type = PatternLayout
-appender.console.layout.pattern = %d{yyyy-MM-dd HH:mm:ss,SSS} %-5p [%t] %-60c %x - %m%n
-END
-}
-
-setConsoleLogging
 
 start_kubernetes
 
-cd "$DOCKER_MODULE_DIR"
-# Build a Flink image without any user jars
-build_image_with_jar ${TEST_INFRA_DIR}/test-data/words ${FLINK_IMAGE_NAME}
+build_image ${FLINK_IMAGE_NAME}
 
 kubectl create clusterrolebinding ${CLUSTER_ROLE_BINDING} --clusterrole=edit --serviceaccount=default:default --namespace=default
 
@@ -67,7 +45,6 @@ mkdir -p "$(dirname $LOCAL_OUTPUT_PATH)"
     -Djobmanager.memory.process.size=1088m \
     -Dkubernetes.jobmanager.cpu=0.5 \
     -Dkubernetes.taskmanager.cpu=0.5 \
-    -Dkubernetes.container-start-command-template="%java% %classpath% %jvmmem% %jvmopts% %logging% %class% %args%" \
     -Dkubernetes.rest-service.exposed.type=NodePort
 
 kubectl wait --for=condition=Available --timeout=30s deploy/${CLUSTER_ID} || exit 1
@@ -78,7 +55,17 @@ wait_rest_endpoint_up_k8s $jm_pod_name
     -Dkubernetes.cluster-id=${CLUSTER_ID} \
     ${FLINK_DIR}/examples/batch/WordCount.jar ${ARGS}
 
+if ! check_logs_output $jm_pod_name 'Starting KubernetesSessionClusterEntrypoint'; then
+  echo "JobManager logs are not accessible via kubectl logs."
+  exit 1
+fi
+
+tm_pod_name=$(kubectl get pods | awk '/taskmanager/ {print $1}')
+if ! check_logs_output $tm_pod_name 'Starting Kubernetes TaskExecutor runner'; then
+  echo "TaskManager logs are not accessible via kubectl logs."
+  exit 1
+fi
+
 kubectl cp `kubectl get pods | awk '/taskmanager/ {print $1}'`:${OUTPUT_PATH} ${LOCAL_OUTPUT_PATH}
 
 check_result_hash "WordCount" "${LOCAL_OUTPUT_PATH}" "${RESULT_HASH}"
-SUCCEEDED=$?

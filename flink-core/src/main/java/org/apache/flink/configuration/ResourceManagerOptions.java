@@ -59,13 +59,26 @@ public class ResourceManagerOptions {
 
 	@Documentation.Section(Documentation.Sections.EXPERT_SCHEDULING)
 	public static final ConfigOption<Integer> MAX_SLOT_NUM = ConfigOptions
-		.key("slotmanager.max-number-of-slots")
+		.key("slotmanager.number-of-slots.max")
 		.intType()
 		.defaultValue(Integer.MAX_VALUE)
 		.withDescription("Defines the maximum number of slots that the Flink cluster allocates. This configuration option " +
 			"is meant for limiting the resource consumption for batch workloads. It is not recommended to configure this option " +
 			"for streaming workloads, which may fail if there are not enough slots. Note that this configuration option does not take " +
 			"effect for standalone clusters, where how many slots are allocated is not controlled by Flink.");
+
+	/**
+	 * The number of redundant task managers. Redundant task managers are extra task managers started by Flink,
+	 * in order to speed up job recovery in case of failures due to task manager lost.
+	 * Note that this feature is available only to the active deployments (native K8s, Yarn and Mesos).
+	 */
+	public static final ConfigOption<Integer> REDUNDANT_TASK_MANAGER_NUM = ConfigOptions
+		.key("slotmanager.redundant-taskmanager-num")
+		.intType()
+		.defaultValue(0)
+		.withDescription("The number of redundant task managers. Redundant task managers are extra task managers " +
+			"started by Flink, in order to speed up job recovery in case of failures due to task manager lost. " +
+			"Note that this feature is available only to the active deployments (native K8s, Yarn and Mesos).");
 
 	/**
 	 * The timeout for a slot request to be discarded, in milliseconds.

@@ -20,9 +20,9 @@ package org.apache.flink.table.api.stream.table.validation
 
 import org.apache.flink.api.scala._
 import org.apache.flink.streaming.api.scala.StreamExecutionEnvironment
-import org.apache.flink.table.api.scala._
+import org.apache.flink.table.api._
+import org.apache.flink.table.api.bridge.scala._
 import org.apache.flink.table.api.stream.table.validation.JoinValidationTest.WithoutEqualsHashCode
-import org.apache.flink.table.api.{EnvironmentSettings, TableException, ValidationException}
 import org.apache.flink.table.runtime.utils.JavaUserDefinedScalarFunctions.PythonScalarFunction
 import org.apache.flink.table.runtime.utils.StreamTestData
 import org.apache.flink.table.utils.TableTestBase
@@ -232,7 +232,7 @@ class JoinValidationTest extends TableTestBase {
     val in1 = tEnv1.fromDataStream(ds1, 'a, 'b, 'c)
     val in2 = tEnv2.fromDataStream(ds2, 'd, 'e, 'f, 'g, 'c)
     // Must fail. Tables are bound to different TableEnvironments.
-    in1.join(in2).where("a === d").select("g.count")
+    in1.join(in2).where($"a" === $"d").select($"g".count)
   }
 
   /**

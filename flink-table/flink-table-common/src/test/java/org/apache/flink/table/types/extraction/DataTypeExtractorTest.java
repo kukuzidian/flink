@@ -26,6 +26,8 @@ import org.apache.flink.table.annotation.DataTypeHint;
 import org.apache.flink.table.annotation.HintFlag;
 import org.apache.flink.table.api.DataTypes;
 import org.apache.flink.table.api.ValidationException;
+import org.apache.flink.table.api.dataview.ListView;
+import org.apache.flink.table.api.dataview.MapView;
 import org.apache.flink.table.catalog.DataTypeFactory;
 import org.apache.flink.table.functions.TableFunction;
 import org.apache.flink.table.types.DataType;
@@ -36,6 +38,7 @@ import org.apache.flink.table.types.logical.BooleanType;
 import org.apache.flink.table.types.logical.IntType;
 import org.apache.flink.table.types.logical.MapType;
 import org.apache.flink.table.types.logical.StructuredType;
+import org.apache.flink.table.types.logical.StructuredType.StructuredAttribute;
 import org.apache.flink.table.types.logical.TypeInformationRawType;
 import org.apache.flink.table.types.logical.VarCharType;
 import org.apache.flink.table.types.utils.DataTypeFactoryMock;
@@ -63,7 +66,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.function.Function;
 
-import static org.apache.flink.util.CoreMatchers.containsCause;
+import static org.apache.flink.core.testutils.FlinkMatchers.containsCause;
 import static org.hamcrest.CoreMatchers.equalTo;
 import static org.junit.Assert.assertThat;
 
@@ -71,6 +74,7 @@ import static org.junit.Assert.assertThat;
  * Tests for {@link DataTypeExtractor}.
  */
 @RunWith(Parameterized.class)
+@SuppressWarnings("unused")
 public class DataTypeExtractorTest {
 
 	@SuppressWarnings({"unchecked", "rawtypes"})
@@ -303,6 +307,16 @@ public class DataTypeExtractorTest {
 					"Could not extract a data type from 'java.util.HashMap<java.lang.Integer, java.lang.String>'. " +
 						"Interpreting it as a structured type was also not successful."),
 
+			TestSpec
+				.forGeneric(
+					"ARRAY type with List conversion class",
+					TableFunction.class, 0, TableFunctionWithList.class)
+				.expectDataType(
+					DataTypes.ARRAY(
+						DataTypes.ARRAY(DataTypes.STRING()).bridgedTo(List.class)
+					).bridgedTo(List.class)
+				),
+
 			// simple structured type without RAW type
 			TestSpec
 				.forType(SimplePojo.class)
@@ -396,7 +410,76 @@ public class DataTypeExtractorTest {
 			// method with generic return type
 			TestSpec
 				.forMethodOutput(IntegerVarArg.class)
-				.expectDataType(DataTypes.INT())
+				.expectDataType(DataTypes.INT()),
+
+			TestSpec
+				.forType(
+					"Structured type with invalid constructor",
+					SimplePojoWithInvalidConstructor.class)
+				.expectErrorMessage(
+					"Class '" + SimplePojoWithInvalidConstructor.class.getName() + "' has neither a " +
+						"constructor that assigns all fields nor a default constructor."),
+
+			TestSpec
+				.forType(
+					"Structured type with self reference",
+					PojoWithInvalidSelfReference.class)
+				.expectErrorMessage(
+					"Cyclic reference detected for class '" + PojoWithInvalidSelfReference.class.getName() + "'. Attributes " +
+						"of structured types must not (transitively) reference the structured type itself."),
+
+			TestSpec
+				.forType(
+					"Structured type with self reference that is avoided using RAW",
+					PojoWithRawSelfReference.class)
+				.lookupExpects(PojoWithRawSelfReference.class)
+				.expectDataType(getPojoWithRawSelfReferenceDataType()),
+
+			TestSpec
+				.forType(
+					"Data view with default extraction",
+					AccumulatorWithDefaultDataView.class)
+				.lookupExpects(Object.class)
+				.expectDataType(
+					DataTypes.STRUCTURED(
+						AccumulatorWithDefaultDataView.class,
+						DataTypes.FIELD(
+							"listView",
+							ListView.newListViewDataType(DataTypes.RAW(new GenericTypeInfo<>(Object.class))))
+					)
+				),
+
+			TestSpec
+				.forType(
+					"Data view with custom extraction for list view",
+					AccumulatorWithCustomListView.class)
+				.expectDataType(
+					DataTypes.STRUCTURED(
+						AccumulatorWithCustomListView.class,
+						DataTypes.FIELD(
+							"listView",
+							ListView.newListViewDataType(DataTypes.STRING()))
+					)
+				),
+
+			TestSpec
+				.forType(
+					"Data view with custom extraction for map view",
+					AccumulatorWithCustomMapView.class)
+				.expectDataType(
+					DataTypes.STRUCTURED(
+						AccumulatorWithCustomMapView.class,
+						DataTypes.FIELD(
+							"mapView",
+							MapView.newMapViewDataType(DataTypes.INT(), DataTypes.STRING()))
+					)
+				),
+
+			TestSpec
+				.forType(
+					"Invalid data view",
+					AccumulatorWithInvalidView.class)
+				.expectErrorMessage("Annotated list views should have a logical type of ARRAY.")
 		);
 	}
 
@@ -543,21 +626,22 @@ public class DataTypeExtractorTest {
 		final StructuredType.Builder builder = StructuredType.newBuilder(simplePojoClass);
 		builder.attributes(
 			Arrays.asList(
-				new StructuredType.StructuredAttribute("intField", new IntType(true)),
-				new StructuredType.StructuredAttribute("primitiveBooleanField", new BooleanType(false)),
-				new StructuredType.StructuredAttribute("primitiveIntField", new IntType(false)),
-				new StructuredType.StructuredAttribute("stringField", new VarCharType(VarCharType.MAX_LENGTH))));
+				new StructuredAttribute("intField", new IntType(true)),
+				new StructuredAttribute("primitiveBooleanField", new BooleanType(false)),
+				new StructuredAttribute("primitiveIntField", new IntType(false)),
+				new StructuredAttribute("stringField", new VarCharType(VarCharType.MAX_LENGTH))));
 		builder.setFinal(true);
 		builder.setInstantiable(true);
 		final StructuredType structuredType = builder.build();
 
-		final Map<String, DataType> fields = new HashMap<>();
-		fields.put("intField", DataTypes.INT());
-		fields.put("primitiveBooleanField", DataTypes.BOOLEAN().notNull().bridgedTo(boolean.class));
-		fields.put("primitiveIntField", DataTypes.INT().notNull().bridgedTo(int.class));
-		fields.put("stringField", DataTypes.STRING());
+		final List<DataType> fieldDataTypes = Arrays.asList(
+			DataTypes.INT(),
+			DataTypes.BOOLEAN().notNull().bridgedTo(boolean.class),
+			DataTypes.INT().notNull().bridgedTo(int.class),
+			DataTypes.STRING()
+		);
 
-		return new FieldsDataType(structuredType, simplePojoClass, fields);
+		return new FieldsDataType(structuredType, simplePojoClass, fieldDataTypes);
 	}
 
 	/**
@@ -567,25 +651,26 @@ public class DataTypeExtractorTest {
 		final StructuredType.Builder builder = StructuredType.newBuilder(complexPojoClass);
 		builder.attributes(
 			Arrays.asList(
-				new StructuredType.StructuredAttribute(
+				new StructuredAttribute(
 					"mapField",
 					new MapType(new VarCharType(VarCharType.MAX_LENGTH), new IntType())),
-				new StructuredType.StructuredAttribute(
+				new StructuredAttribute(
 					"simplePojoField",
 					getSimplePojoDataType(simplePojoClass).getLogicalType()),
-				new StructuredType.StructuredAttribute(
+				new StructuredAttribute(
 					"someObject",
 					new TypeInformationRawType<>(new GenericTypeInfo<>(Object.class)))));
 		builder.setFinal(true);
 		builder.setInstantiable(true);
 		final StructuredType structuredType = builder.build();
 
-		final Map<String, DataType> fields = new HashMap<>();
-		fields.put("mapField", DataTypes.MAP(DataTypes.STRING(), DataTypes.INT()));
-		fields.put("simplePojoField", getSimplePojoDataType(simplePojoClass));
-		fields.put("someObject", DataTypes.RAW(new GenericTypeInfo<>(Object.class)));
+		final List<DataType> fieldDataTypes = Arrays.asList(
+			DataTypes.MAP(DataTypes.STRING(), DataTypes.INT()),
+			getSimplePojoDataType(simplePojoClass),
+			DataTypes.RAW(new GenericTypeInfo<>(Object.class))
+		);
 
-		return new FieldsDataType(structuredType, complexPojoClass, fields);
+		return new FieldsDataType(structuredType, complexPojoClass, fieldDataTypes);
 	}
 
 	/**
@@ -595,67 +680,92 @@ public class DataTypeExtractorTest {
 		final StructuredType.Builder builder = StructuredType.newBuilder(pojoClass);
 		builder.attributes(
 			Arrays.asList(
-				new StructuredType.StructuredAttribute(
+				new StructuredAttribute(
 					"z",
 					new BigIntType()),
-				new StructuredType.StructuredAttribute(
+				new StructuredAttribute(
 					"y",
 					new BooleanType()),
-				new StructuredType.StructuredAttribute(
+				new StructuredAttribute(
 					"x",
 					new IntType())));
 		builder.setFinal(true);
 		builder.setInstantiable(true);
 		final StructuredType structuredType = builder.build();
 
-		final Map<String, DataType> fields = new HashMap<>();
-		fields.put("z", DataTypes.BIGINT());
-		fields.put("y", DataTypes.BOOLEAN());
-		fields.put("x", DataTypes.INT());
+		final List<DataType> fieldDataTypes = Arrays.asList(
+			DataTypes.BIGINT(),
+			DataTypes.BOOLEAN(),
+			DataTypes.INT()
+		);
 
-		return new FieldsDataType(structuredType, pojoClass, fields);
+		return new FieldsDataType(structuredType, pojoClass, fieldDataTypes);
 	}
 
 	private static DataType getOuterTupleDataType() {
 		final StructuredType.Builder builder = StructuredType.newBuilder(Tuple2.class);
 		builder.attributes(
 			Arrays.asList(
-				new StructuredType.StructuredAttribute(
+				new StructuredAttribute(
 					"f0",
 					new IntType()),
-				new StructuredType.StructuredAttribute(
+				new StructuredAttribute(
 					"f1",
 					getInnerTupleDataType().getLogicalType())));
 		builder.setFinal(true);
 		builder.setInstantiable(true);
 		final StructuredType structuredType = builder.build();
 
-		final Map<String, DataType> fields = new HashMap<>();
-		fields.put("f0", DataTypes.INT());
-		fields.put("f1", getInnerTupleDataType());
+		final List<DataType> fieldDataTypes = Arrays.asList(
+			DataTypes.INT(),
+			getInnerTupleDataType()
+		);
 
-		return new FieldsDataType(structuredType, Tuple2.class, fields);
+		return new FieldsDataType(structuredType, Tuple2.class, fieldDataTypes);
 	}
 
 	private static DataType getInnerTupleDataType() {
 		final StructuredType.Builder builder = StructuredType.newBuilder(Tuple2.class);
 		builder.attributes(
 			Arrays.asList(
-				new StructuredType.StructuredAttribute(
+				new StructuredAttribute(
 					"f0",
 					new VarCharType(VarCharType.MAX_LENGTH)),
-				new StructuredType.StructuredAttribute(
+				new StructuredAttribute(
 					"f1",
 					new BooleanType())));
 		builder.setFinal(true);
 		builder.setInstantiable(true);
 		final StructuredType structuredType = builder.build();
 
-		final Map<String, DataType> fields = new HashMap<>();
-		fields.put("f0", DataTypes.STRING());
-		fields.put("f1", DataTypes.BOOLEAN());
+		final List<DataType> fieldDataTypes = Arrays.asList(
+			DataTypes.STRING(),
+			DataTypes.BOOLEAN()
+		);
 
-		return new FieldsDataType(structuredType, Tuple2.class, fields);
+		return new FieldsDataType(structuredType, Tuple2.class, fieldDataTypes);
+	}
+
+	private static DataType getPojoWithRawSelfReferenceDataType() {
+		final StructuredType.Builder builder = StructuredType.newBuilder(PojoWithRawSelfReference.class);
+		builder.attributes(
+			Arrays.asList(
+				new StructuredAttribute(
+					"integer",
+					new IntType()),
+				new StructuredAttribute(
+					"reference",
+					new TypeInformationRawType<>(new GenericTypeInfo<>(PojoWithRawSelfReference.class)))));
+		builder.setFinal(true);
+		builder.setInstantiable(true);
+		final StructuredType structuredType = builder.build();
+
+		final List<DataType> fieldDataTypes = Arrays.asList(
+			DataTypes.INT(),
+			DataTypes.RAW(new GenericTypeInfo<>(PojoWithRawSelfReference.class))
+		);
+
+		return new FieldsDataType(structuredType, PojoWithRawSelfReference.class, fieldDataTypes);
 	}
 
 	// --------------------------------------------------------------------------------------------
@@ -687,6 +797,12 @@ public class DataTypeExtractorTest {
 	// --------------------------------------------------------------------------------------------
 
 	private static class TableFunctionWithHashMap extends TableFunction<HashMap<Integer, String>> {
+
+	}
+
+	// --------------------------------------------------------------------------------------------
+
+	private static class TableFunctionWithList extends TableFunction<List<List<String>>> {
 
 	}
 
@@ -941,5 +1057,83 @@ public class DataTypeExtractorTest {
 
 	private static class RawTypeSpecific extends RawTypeGeneric {
 		// nothing to do
+	}
+
+	// --------------------------------------------------------------------------------------------
+
+	/**
+	 * Default constructor is missing.
+	 */
+	public static class SimplePojoWithInvalidConstructor {
+		public Integer intField;
+		public boolean primitiveBooleanField;
+		public int primitiveIntField;
+		public String stringField;
+
+		public SimplePojoWithInvalidConstructor(Integer intField) {
+			this.intField = intField;
+		}
+	}
+
+	// --------------------------------------------------------------------------------------------
+
+	/**
+	 * Self reference in attribute.
+	 */
+	public static class PojoWithInvalidSelfReference {
+		public Integer integer;
+		public PojoWithInvalidSelfReferenceNested nestedPojo;
+	}
+
+	/**
+	 * Nested POJO for self reference test.
+	 */
+	public static class PojoWithInvalidSelfReferenceNested {
+		public PojoWithInvalidSelfReference reference;
+	}
+
+	// --------------------------------------------------------------------------------------------
+
+	/**
+	 * Self reference in attribute that is fixed with RAW type.
+	 */
+	public static class PojoWithRawSelfReference {
+		public Integer integer;
+		@DataTypeHint(value = "RAW", bridgedTo = PojoWithRawSelfReference.class)
+		public PojoWithRawSelfReference reference;
+	}
+
+	// --------------------------------------------------------------------------------------------
+
+	/**
+	 * Accumulator with default extraction for data view.
+	 */
+	public static class AccumulatorWithDefaultDataView {
+		@DataTypeHint(allowRawGlobally = HintFlag.TRUE)
+		public ListView<Object> listView;
+	}
+
+	/**
+	 * Accumulator with custom extraction for list view.
+	 */
+	public static class AccumulatorWithCustomListView {
+		@DataTypeHint("ARRAY<STRING>")
+		public ListView<?> listView;
+	}
+
+	/**
+	 * Accumulator with custom extraction for map view.
+	 */
+	public static class AccumulatorWithCustomMapView {
+		@DataTypeHint("MAP<INT, STRING>")
+		public MapView<?, ?> mapView;
+	}
+
+	/**
+	 * Accumulator with invalid list view.
+	 */
+	public static class AccumulatorWithInvalidView {
+		@DataTypeHint("INT")
+		public ListView<?> listView;
 	}
 }

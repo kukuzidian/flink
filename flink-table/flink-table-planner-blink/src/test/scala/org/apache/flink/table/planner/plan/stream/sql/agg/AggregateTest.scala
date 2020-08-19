@@ -20,9 +20,8 @@ package org.apache.flink.table.planner.plan.stream.sql.agg
 
 import org.apache.flink.api.common.typeinfo.TypeInformation
 import org.apache.flink.api.scala._
+import org.apache.flink.table.api._
 import org.apache.flink.table.api.config.ExecutionConfigOptions
-import org.apache.flink.table.api.scala._
-import org.apache.flink.table.api.{TableException, Types, ValidationException}
 import org.apache.flink.table.planner.utils.{StreamTableTestUtil, TableTestBase}
 import org.apache.flink.table.runtime.typeutils.DecimalDataTypeInfo
 
@@ -185,7 +184,8 @@ class AggregateTest extends TableTestBase {
 
   @Test
   def testAvgWithRetract(): Unit = {
-    util.verifyPlanWithTrait("SELECT AVG(a) FROM (SELECT AVG(a) AS a FROM T GROUP BY b)")
+    util.verifyPlan(
+      "SELECT AVG(a) FROM (SELECT AVG(a) AS a FROM T GROUP BY b)", ExplainDetail.CHANGELOG_MODE)
   }
 
   @Test
@@ -206,7 +206,8 @@ class AggregateTest extends TableTestBase {
 
   @Test
   def testSumWithRetract(): Unit = {
-    util.verifyPlanWithTrait("SELECT SUM(a) FROM (SELECT SUM(a) AS a FROM T GROUP BY b)")
+    util.verifyPlan(
+      "SELECT SUM(a) FROM (SELECT SUM(a) AS a FROM T GROUP BY b)", ExplainDetail.CHANGELOG_MODE)
   }
 
   @Test
@@ -232,7 +233,8 @@ class AggregateTest extends TableTestBase {
 
   @Test
   def testMinWithRetract(): Unit = {
-    util.verifyPlanWithTrait("SELECT MIN(a) FROM (SELECT MIN(a) AS a FROM T GROUP BY b)")
+    util.verifyPlan(
+      "SELECT MIN(a) FROM (SELECT MIN(a) AS a FROM T GROUP BY b)", ExplainDetail.CHANGELOG_MODE)
   }
 
   @Test
@@ -258,7 +260,8 @@ class AggregateTest extends TableTestBase {
 
   @Test
   def testMaxWithRetract(): Unit = {
-    util.verifyPlanWithTrait("SELECT MAX(a) FROM (SELECT MAX(a) AS a FROM T GROUP BY b)")
+    util.verifyPlan(
+      "SELECT MAX(a) FROM (SELECT MAX(a) AS a FROM T GROUP BY b)", ExplainDetail.CHANGELOG_MODE)
   }
 
   @Test
@@ -268,5 +271,11 @@ class AggregateTest extends TableTestBase {
         |SELECT a, MAX(b), c FROM (SELECT a, 'test' AS c, b FROM T) t GROUP BY a, c
       """.stripMargin
     util.verifyPlan(sql)
+  }
+
+  @Test
+  def testColumnIntervalValidation(): Unit = {
+    // test for FLINK-16577
+    util.verifyPlan("SELECT b, SUM(a) FROM MyTable WHERE a > 0.1 and a < 10 GROUP BY b")
   }
 }

@@ -46,6 +46,7 @@ import org.apache.flink.runtime.concurrent.ComponentMainThreadExecutor;
 import org.apache.flink.runtime.concurrent.FutureUtils;
 import org.apache.flink.runtime.concurrent.FutureUtils.ConjunctFuture;
 import org.apache.flink.runtime.concurrent.ScheduledExecutorServiceAdapter;
+import org.apache.flink.runtime.entrypoint.ClusterEntryPointExceptionUtils;
 import org.apache.flink.runtime.execution.ExecutionState;
 import org.apache.flink.runtime.execution.SuppressRestartsException;
 import org.apache.flink.runtime.executiongraph.failover.FailoverStrategy;
@@ -60,12 +61,10 @@ import org.apache.flink.runtime.jobgraph.IntermediateDataSetID;
 import org.apache.flink.runtime.jobgraph.IntermediateResultPartitionID;
 import org.apache.flink.runtime.jobgraph.JobVertex;
 import org.apache.flink.runtime.jobgraph.JobVertexID;
-import org.apache.flink.runtime.jobgraph.OperatorID;
 import org.apache.flink.runtime.jobgraph.ScheduleMode;
 import org.apache.flink.runtime.jobgraph.tasks.CheckpointCoordinatorConfiguration;
 import org.apache.flink.runtime.jobmanager.scheduler.CoLocationGroup;
 import org.apache.flink.runtime.jobmaster.slotpool.SlotProvider;
-import org.apache.flink.runtime.operators.coordination.OperatorCoordinator;
 import org.apache.flink.runtime.query.KvStateLocationRegistry;
 import org.apache.flink.runtime.scheduler.InternalFailuresListener;
 import org.apache.flink.runtime.scheduler.adapter.DefaultExecutionTopology;
@@ -315,6 +314,9 @@ public class ExecutionGraph implements AccessExecutionGraph {
 	/** Shuffle master to register partitions for task deployment. */
 	private final ShuffleMaster<?> shuffleMaster;
 
+	private final ExecutionDeploymentListener executionDeploymentListener;
+	private final ExecutionStateUpdateListener executionStateUpdateListener;
+
 	// --------------------------------------------------------------------------------------------
 	//   Constructors
 	// --------------------------------------------------------------------------------------------
@@ -334,7 +336,9 @@ public class ExecutionGraph implements AccessExecutionGraph {
 			PartitionReleaseStrategy.Factory partitionReleaseStrategyFactory,
 			ShuffleMaster<?> shuffleMaster,
 			JobMasterPartitionTracker partitionTracker,
-			ScheduleMode scheduleMode) throws IOException {
+			ScheduleMode scheduleMode,
+			ExecutionDeploymentListener executionDeploymentListener,
+			ExecutionStateUpdateListener executionStateUpdateListener) throws IOException {
 
 		this.jobInformation = Preconditions.checkNotNull(jobInformation);
 
@@ -392,6 +396,9 @@ public class ExecutionGraph implements AccessExecutionGraph {
 		this.resultPartitionAvailabilityChecker = new ExecutionGraphResultPartitionAvailabilityChecker(
 			this::createResultPartitionId,
 			partitionTracker);
+
+		this.executionDeploymentListener = executionDeploymentListener;
+		this.executionStateUpdateListener = executionStateUpdateListener;
 	}
 
 	public void start(@Nonnull ComponentMainThreadExecutor jobMasterMainThreadExecutor) {
@@ -570,13 +577,7 @@ public class ExecutionGraph implements AccessExecutionGraph {
 	private Collection<OperatorCoordinatorCheckpointContext> buildOpCoordinatorCheckpointContexts() {
 		final ArrayList<OperatorCoordinatorCheckpointContext> contexts = new ArrayList<>();
 		for (final ExecutionJobVertex vertex : verticesInCreationOrder) {
-			for (final Map.Entry<OperatorID, OperatorCoordinator> coordinator : vertex.getOperatorCoordinatorMap().entrySet()) {
-				contexts.add(new OperatorCoordinatorCheckpointContext(
-						coordinator.getValue(),
-						coordinator.getKey(),
-						vertex.getMaxParallelism(),
-						vertex.getParallelism()));
-			}
+			contexts.addAll(vertex.getOperatorCoordinators());
 		}
 		contexts.trimToSize();
 		return contexts;
@@ -1296,6 +1297,7 @@ public class ExecutionGraph implements AccessExecutionGraph {
 				}
 				catch (Throwable t) {
 					ExceptionUtils.rethrowIfFatalError(t);
+					ClusterEntryPointExceptionUtils.tryEnrichClusterEntryPointError(t);
 					failGlobal(new Exception("Failed to finalize execution on master", t));
 					return;
 				}
@@ -1683,6 +1685,8 @@ public class ExecutionGraph implements AccessExecutionGraph {
 			return;
 		}
 
+		executionStateUpdateListener.onStateUpdate(execution.getAttemptId(), newExecutionState);
+
 		// see what this means for us. currently, the first FAILED state means -> FAILED
 		if (newExecutionState == ExecutionState.FAILED) {
 			final Throwable ex = error != null ? error : new FlinkException("Unknown Error (missing cause)");
@@ -1733,5 +1737,9 @@ public class ExecutionGraph implements AccessExecutionGraph {
 
 	PartitionReleaseStrategy getPartitionReleaseStrategy() {
 		return partitionReleaseStrategy;
+	}
+
+	ExecutionDeploymentListener getExecutionDeploymentListener() {
+		return executionDeploymentListener;
 	}
 }

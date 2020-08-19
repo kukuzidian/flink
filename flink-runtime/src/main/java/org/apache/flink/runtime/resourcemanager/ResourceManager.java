@@ -206,7 +206,7 @@ public abstract class ResourceManager<WorkerType extends ResourceIDRetrievable>
 	// ------------------------------------------------------------------------
 
 	@Override
-	public void onStart() throws Exception {
+	public final void onStart() throws Exception {
 		try {
 			startResourceManagerServices();
 		} catch (Exception e) {
@@ -242,7 +242,7 @@ public abstract class ResourceManager<WorkerType extends ResourceIDRetrievable>
 	}
 
 	@Override
-	public CompletableFuture<Void> onStop() {
+	public final CompletableFuture<Void> onStop() {
 		try {
 			stopResourceManagerServices();
 		} catch (Exception exception) {
@@ -255,6 +255,12 @@ public abstract class ResourceManager<WorkerType extends ResourceIDRetrievable>
 
 	private void stopResourceManagerServices() throws Exception {
 		Exception exception = null;
+
+		try {
+			terminate();
+		} catch (Exception e) {
+			exception = new ResourceManagerException("Error while shutting down resource manager", e);
+		}
 
 		stopHeartbeatServices();
 
@@ -392,7 +398,7 @@ public abstract class ResourceManager<WorkerType extends ResourceIDRetrievable>
 						return registerTaskExecutorInternal(taskExecutorGateway, taskExecutorRegistration);
 					}
 				} else {
-					log.info("Ignoring outdated TaskExecutorGateway connection.");
+					log.debug("Ignoring outdated TaskExecutorGateway connection for {}.", resourceId);
 					return new RegistrationResponse.Decline("Decline outdated task executor registration.");
 				}
 			},
@@ -404,11 +410,17 @@ public abstract class ResourceManager<WorkerType extends ResourceIDRetrievable>
 		final WorkerRegistration<WorkerType> workerTypeWorkerRegistration = taskExecutors.get(taskManagerResourceId);
 
 		if (workerTypeWorkerRegistration.getInstanceID().equals(taskManagerRegistrationId)) {
-			slotManager.registerTaskManager(workerTypeWorkerRegistration, slotReport);
+			if (slotManager.registerTaskManager(workerTypeWorkerRegistration, slotReport)) {
+				onWorkerRegistered(workerTypeWorkerRegistration.getWorker());
+			}
 			return CompletableFuture.completedFuture(Acknowledge.get());
 		} else {
 			return FutureUtils.completedExceptionally(new ResourceManagerException(String.format("Unknown TaskManager registration id %s.", taskManagerRegistrationId)));
 		}
+	}
+
+	protected void onWorkerRegistered(WorkerType worker) {
+		// noop
 	}
 
 	@Override
@@ -992,10 +1004,16 @@ public abstract class ResourceManager<WorkerType extends ResourceIDRetrievable>
 		}
 	}
 
-	protected void startServicesOnLeadership() {
+	private void startServicesOnLeadership() {
 		startHeartbeatServices();
 
 		slotManager.start(getFencingToken(), getMainThreadExecutor(), new ResourceActionsImpl());
+
+		onLeadership();
+	}
+
+	protected void onLeadership() {
+		// noop by default
 	}
 
 	/**
@@ -1057,6 +1075,13 @@ public abstract class ResourceManager<WorkerType extends ResourceIDRetrievable>
 	 * @throws ResourceManagerException which occurs during initialization and causes the resource manager to fail.
 	 */
 	protected abstract void initialize() throws ResourceManagerException;
+
+	/**
+	 * Terminates the framework specific components.
+	 *
+	 * @throws Exception which occurs during termination.
+	 */
+	protected abstract void terminate() throws Exception;
 
 	/**
 	 * This method can be overridden to add a (non-blocking) initialization routine to the

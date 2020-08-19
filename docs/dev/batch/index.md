@@ -50,7 +50,7 @@ Example Program
 
 The following program is a complete, working example of WordCount. You can copy &amp; paste the code
 to run it locally. You only have to include the correct Flink's library into your project
-(see Section [Linking with Flink]({{ site.baseurl }}/dev/projectsetup/dependencies.html)) and specify the imports. Then you are ready
+(see Section [Linking with Flink]({{ site.baseurl }}/dev/project-configuration.html)) and specify the imports. Then you are ready
 to go!
 
 <div class="codetabs" markdown="1">
@@ -1112,7 +1112,7 @@ DataSet<Long> numbers = env.generateSequence(1, 10000000);
 // Read data from a relational database using the JDBC input format
 DataSet<Tuple2<String, Integer> dbData =
     env.createInput(
-      JDBCInputFormat.buildJDBCInputFormat()
+      JdbcInputFormat.buildJdbcInputFormat()
                      .setDrivername("org.apache.derby.jdbc.EmbeddedDriver")
                      .setDBUrl("jdbc:derby:memory:persons")
                      .setQuery("select name, age from persons")
@@ -1414,7 +1414,7 @@ DataSet<Tuple3<String, Integer, Double>> myResult = [...]
 // write Tuple DataSet to a relational database
 myResult.output(
     // build and configure OutputFormat
-    JDBCOutputFormat.buildJDBCOutputFormat()
+    JdbcOutputFormat.buildJdbcOutputFormat()
                     .setDrivername("org.apache.derby.jdbc.EmbeddedDriver")
                     .setDBUrl("jdbc:derby:memory:persons")
                     .setQuery("insert into persons (name, age, height) values (?,?,?)")

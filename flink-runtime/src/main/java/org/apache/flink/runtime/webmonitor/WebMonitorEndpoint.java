@@ -64,6 +64,7 @@ import org.apache.flink.runtime.rest.handler.job.checkpoints.CheckpointStatistic
 import org.apache.flink.runtime.rest.handler.job.checkpoints.CheckpointStatsCache;
 import org.apache.flink.runtime.rest.handler.job.checkpoints.CheckpointingStatisticsHandler;
 import org.apache.flink.runtime.rest.handler.job.checkpoints.TaskCheckpointStatisticDetailsHandler;
+import org.apache.flink.runtime.rest.handler.job.coordination.ClientCoordinationHandler;
 import org.apache.flink.runtime.rest.handler.job.metrics.AggregatingJobsMetricsHandler;
 import org.apache.flink.runtime.rest.handler.job.metrics.AggregatingSubtasksMetricsHandler;
 import org.apache.flink.runtime.rest.handler.job.metrics.AggregatingTaskManagersMetricsHandler;
@@ -119,6 +120,7 @@ import org.apache.flink.runtime.rest.messages.job.JobDetailsHeaders;
 import org.apache.flink.runtime.rest.messages.job.SubtaskCurrentAttemptDetailsHeaders;
 import org.apache.flink.runtime.rest.messages.job.SubtaskExecutionAttemptAccumulatorsHeaders;
 import org.apache.flink.runtime.rest.messages.job.SubtaskExecutionAttemptDetailsHeaders;
+import org.apache.flink.runtime.rest.messages.job.coordination.ClientCoordinationHeaders;
 import org.apache.flink.runtime.rest.messages.taskmanager.TaskManagerCustomLogHeaders;
 import org.apache.flink.runtime.rest.messages.taskmanager.TaskManagerDetailsHeaders;
 import org.apache.flink.runtime.rest.messages.taskmanager.TaskManagerLogFileHeaders;
@@ -144,6 +146,7 @@ import java.io.File;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -218,6 +221,10 @@ public class WebMonitorEndpoint<T extends RestfulGateway> extends RestServerEndp
 	protected List<Tuple2<RestHandlerSpecification, ChannelInboundHandler>> initializeHandlers(final CompletableFuture<String> localAddressFuture) {
 		ArrayList<Tuple2<RestHandlerSpecification, ChannelInboundHandler>> handlers = new ArrayList<>(30);
 
+		final Collection<Tuple2<RestHandlerSpecification, ChannelInboundHandler>> webSubmissionHandlers = initializeWebSubmissionHandlers(localAddressFuture);
+		handlers.addAll(webSubmissionHandlers);
+		final boolean hasWebSubmissionHandlers = !webSubmissionHandlers.isEmpty();
+
 		final Time timeout = restConfiguration.getTimeout();
 
 		ClusterOverviewHandler clusterOverviewHandler = new ClusterOverviewHandler(
@@ -232,7 +239,7 @@ public class WebMonitorEndpoint<T extends RestfulGateway> extends RestServerEndp
 			responseHeaders,
 			DashboardConfigurationHeaders.getInstance(),
 			restConfiguration.getRefreshInterval(),
-			restConfiguration.isWebSubmitEnabled());
+			hasWebSubmissionHandlers);
 
 		JobIdsHandler jobIdsHandler = new JobIdsHandler(
 			leaderRetriever,
@@ -559,6 +566,12 @@ public class WebMonitorEndpoint<T extends RestfulGateway> extends RestServerEndp
 		final ClusterDataSetDeleteHandlers.ClusterDataSetDeleteStatusHandler clusterDataSetDeleteStatusHandler =
 			clusterDataSetDeleteHandlers.new ClusterDataSetDeleteStatusHandler(leaderRetriever, timeout, responseHeaders);
 
+		final ClientCoordinationHandler clientCoordinationHandler = new ClientCoordinationHandler(
+			leaderRetriever,
+			timeout,
+			responseHeaders,
+			ClientCoordinationHeaders.getInstance());
+
 		final ShutdownHandler shutdownHandler = new ShutdownHandler(
 			leaderRetriever,
 			timeout,
@@ -625,6 +638,7 @@ public class WebMonitorEndpoint<T extends RestfulGateway> extends RestServerEndp
 		handlers.add(Tuple2.of(clusterDataSetListHandler.getMessageHeaders(), clusterDataSetListHandler));
 		handlers.add(Tuple2.of(clusterDataSetDeleteTriggerHandler.getMessageHeaders(), clusterDataSetDeleteTriggerHandler));
 		handlers.add(Tuple2.of(clusterDataSetDeleteStatusHandler.getMessageHeaders(), clusterDataSetDeleteStatusHandler));
+		handlers.add(Tuple2.of(clientCoordinationHandler.getMessageHeaders(), clientCoordinationHandler));
 
 		// TODO: Remove once the Yarn proxy can forward all REST verbs
 		handlers.add(Tuple2.of(YarnCancelJobTerminationHeaders.getInstance(), yarnJobCancelTerminationHandler));
@@ -736,6 +750,10 @@ public class WebMonitorEndpoint<T extends RestfulGateway> extends RestServerEndp
 			.forEachOrdered(handler -> archivingHandlers.add((JsonArchivist) handler));
 
 		return handlers;
+	}
+
+	protected Collection<Tuple2<RestHandlerSpecification, ChannelInboundHandler>> initializeWebSubmissionHandlers(final CompletableFuture<String> localAddressFuture) {
+		return Collections.emptyList();
 	}
 
 	@Override

@@ -19,22 +19,18 @@ package org.apache.flink.streaming.runtime.io;
 
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.VisibleForTesting;
+import org.apache.flink.runtime.checkpoint.channel.ChannelStateWriter;
+import org.apache.flink.runtime.checkpoint.channel.InputChannelInfo;
 import org.apache.flink.runtime.io.PullingAsyncDataInput;
 import org.apache.flink.runtime.io.network.api.CancelCheckpointMarker;
 import org.apache.flink.runtime.io.network.api.CheckpointBarrier;
 import org.apache.flink.runtime.io.network.api.EndOfPartitionEvent;
-import org.apache.flink.runtime.io.network.buffer.Buffer;
 import org.apache.flink.runtime.io.network.partition.consumer.BufferOrEvent;
 import org.apache.flink.runtime.io.network.partition.consumer.InputChannel;
 import org.apache.flink.runtime.io.network.partition.consumer.InputGate;
-import org.apache.flink.runtime.jobgraph.tasks.AbstractInvokable;
-
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import java.io.Closeable;
 import java.io.IOException;
-import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
@@ -47,38 +43,13 @@ import static org.apache.flink.util.Preconditions.checkState;
  */
 @Internal
 public class CheckpointedInputGate implements PullingAsyncDataInput<BufferOrEvent>, Closeable {
-
-	private static final Logger LOG = LoggerFactory.getLogger(CheckpointedInputGate.class);
-
 	private final CheckpointBarrierHandler barrierHandler;
 
 	/** The gate that the buffer draws its input from. */
 	private final InputGate inputGate;
 
-	private final int channelIndexOffset;
-
 	/** Indicate end of the input. */
 	private boolean isFinished;
-
-	public CheckpointedInputGate(
-			InputGate inputGate,
-			String taskName,
-			AbstractInvokable toNotifyOnCheckpoint) {
-		this(
-			inputGate,
-			new CheckpointBarrierAligner(
-				taskName,
-				InputProcessorUtil.generateChannelIndexToInputGateMap(inputGate),
-				InputProcessorUtil.generateInputGateToChannelIndexOffsetMap(inputGate),
-				toNotifyOnCheckpoint)
-		);
-	}
-
-	public CheckpointedInputGate(
-			InputGate inputGate,
-			CheckpointBarrierHandler barrierHandler) {
-		this(inputGate, barrierHandler, 0);
-	}
 
 	/**
 	 * Creates a new checkpoint stream aligner.
@@ -89,15 +60,11 @@ public class CheckpointedInputGate implements PullingAsyncDataInput<BufferOrEven
 	 *
 	 * @param inputGate The input gate to draw the buffers and events from.
 	 * @param barrierHandler Handler that controls which channels are blocked.
-	 * @param channelIndexOffset Optional offset added to channelIndex returned from the inputGate
-	 *                           before passing it to the barrierHandler.
 	 */
 	public CheckpointedInputGate(
 			InputGate inputGate,
-			CheckpointBarrierHandler barrierHandler,
-			int channelIndexOffset) {
+			CheckpointBarrierHandler barrierHandler) {
 		this.inputGate = inputGate;
-		this.channelIndexOffset = channelIndexOffset;
 		this.barrierHandler = barrierHandler;
 	}
 
@@ -116,14 +83,15 @@ public class CheckpointedInputGate implements PullingAsyncDataInput<BufferOrEven
 			}
 
 			BufferOrEvent bufferOrEvent = next.get();
-			checkState(!barrierHandler.isBlocked(offsetChannelIndex(bufferOrEvent.getChannelIndex())));
+			checkState(!barrierHandler.isBlocked(bufferOrEvent.getChannelInfo()));
 
 			if (bufferOrEvent.isBuffer()) {
 				return next;
 			}
 			else if (bufferOrEvent.getEvent().getClass() == CheckpointBarrier.class) {
 				CheckpointBarrier checkpointBarrier = (CheckpointBarrier) bufferOrEvent.getEvent();
-				barrierHandler.processBarrier(checkpointBarrier, offsetChannelIndex(bufferOrEvent.getChannelIndex()));
+				barrierHandler.processBarrier(checkpointBarrier, bufferOrEvent.getChannelInfo());
+				return next;
 			}
 			else if (bufferOrEvent.getEvent().getClass() == CancelCheckpointMarker.class) {
 				barrierHandler.processCancellationBarrier((CancelCheckpointMarker) bufferOrEvent.getEvent());
@@ -137,20 +105,18 @@ public class CheckpointedInputGate implements PullingAsyncDataInput<BufferOrEven
 		}
 	}
 
-	public List<Buffer> requestInflightBuffers(long checkpointId, int channelIndex) throws IOException {
-		if (((CheckpointBarrierUnaligner) barrierHandler).hasInflightData(checkpointId, channelIndex)) {
-			return inputGate.getChannel(channelIndex).requestInflightBuffers(checkpointId);
+	public void spillInflightBuffers(
+			long checkpointId,
+			int channelIndex,
+			ChannelStateWriter channelStateWriter) throws IOException {
+		InputChannel channel = inputGate.getChannel(channelIndex);
+		if (barrierHandler.hasInflightData(checkpointId, channel.getChannelInfo())) {
+			channel.spillInflightBuffers(checkpointId, channelStateWriter);
 		}
-
-		return Collections.emptyList();
 	}
 
 	public CompletableFuture<Void> getAllBarriersReceivedFuture(long checkpointId) {
-		return ((CheckpointBarrierUnaligner) barrierHandler).getAllBarriersReceivedFuture(checkpointId);
-	}
-
-	private int offsetChannelIndex(int channelIndex) {
-		return channelIndex + channelIndexOffset;
+		return barrierHandler.getAllBarriersReceivedFuture(checkpointId);
 	}
 
 	private Optional<BufferOrEvent> handleEmptyBuffer() {
@@ -184,7 +150,8 @@ public class CheckpointedInputGate implements PullingAsyncDataInput<BufferOrEven
 	 *
 	 * @return The ID of the pending of completed checkpoint.
 	 */
-	public long getLatestCheckpointId() {
+	@VisibleForTesting
+	long getLatestCheckpointId() {
 		return barrierHandler.getLatestCheckpointId();
 	}
 
@@ -227,5 +194,14 @@ public class CheckpointedInputGate implements PullingAsyncDataInput<BufferOrEven
 
 	public InputChannel getChannel(int channelIndex) {
 		return inputGate.getChannel(channelIndex);
+	}
+
+	public List<InputChannelInfo> getChannelInfos() {
+		return inputGate.getChannelInfos();
+	}
+
+	@VisibleForTesting
+	CheckpointBarrierHandler getCheckpointBarrierHandler() {
+		return barrierHandler;
 	}
 }

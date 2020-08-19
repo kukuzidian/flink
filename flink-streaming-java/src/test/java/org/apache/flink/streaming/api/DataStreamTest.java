@@ -18,6 +18,7 @@
 package org.apache.flink.streaming.api;
 
 import org.apache.flink.api.common.InvalidProgramException;
+import org.apache.flink.api.common.eventtime.WatermarkStrategy;
 import org.apache.flink.api.common.functions.FilterFunction;
 import org.apache.flink.api.common.functions.FlatMapFunction;
 import org.apache.flink.api.common.functions.FoldFunction;
@@ -30,6 +31,7 @@ import org.apache.flink.api.common.typeinfo.BasicArrayTypeInfo;
 import org.apache.flink.api.common.typeinfo.BasicTypeInfo;
 import org.apache.flink.api.common.typeinfo.PrimitiveArrayTypeInfo;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
+import org.apache.flink.api.common.typeinfo.Types;
 import org.apache.flink.api.java.functions.KeySelector;
 import org.apache.flink.api.java.tuple.Tuple1;
 import org.apache.flink.api.java.tuple.Tuple2;
@@ -92,11 +94,14 @@ import org.junit.rules.ExpectedException;
 import javax.annotation.Nullable;
 
 import java.lang.reflect.Method;
+import java.time.Duration;
 import java.util.List;
 
+import static org.hamcrest.CoreMatchers.equalTo;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertThat;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
@@ -108,6 +113,27 @@ public class DataStreamTest extends TestLogger {
 
 	@Rule
 	public ExpectedException expectedException = ExpectedException.none();
+
+	/**
+	 * Ensure that WatermarkStrategy is easy to use in the API, without superfluous generics.
+	 */
+	@Test
+	public void testErgonomicWatermarkStrategy() {
+		StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+
+		DataStream<String> input = env.fromElements("bonjour");
+
+		// as soon as you have a chain of methods the first call needs a generic
+		input.assignTimestampsAndWatermarks(
+				WatermarkStrategy
+						.forBoundedOutOfOrderness(Duration.ofMillis(10)));
+
+		// as soon as you have a chain of methods the first call needs to specify the generic type
+		input.assignTimestampsAndWatermarks(
+				WatermarkStrategy
+						.<String>forBoundedOutOfOrderness(Duration.ofMillis(10))
+						.withTimestampAssigner((event, timestamp) -> 42L));
+	}
 
 	/**
 	 * Tests union functionality. This ensures that self-unions and unions of streams
@@ -1001,6 +1027,22 @@ public class DataStreamTest extends TestLogger {
 		} catch (RuntimeException e) {
 			fail(e.getMessage());
 		}
+	}
+
+	@Test
+	public void testKeyedConnectedStreamsType() {
+		StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+
+		DataStreamSource<Integer> stream1 = env.fromElements(1, 2);
+		DataStreamSource<Integer> stream2 = env.fromElements(1, 2);
+
+		ConnectedStreams<Integer, Integer> connectedStreams = stream1.connect(stream2)
+			.keyBy(v -> v, v -> v);
+
+		KeyedStream<?, ?> firstKeyedInput = (KeyedStream<?, ?>) connectedStreams.getFirstInput();
+		KeyedStream<?, ?> secondKeyedInput = (KeyedStream<?, ?>) connectedStreams.getSecondInput();
+		assertThat(firstKeyedInput.getKeyType(), equalTo(Types.INT));
+		assertThat(secondKeyedInput.getKeyType(), equalTo(Types.INT));
 	}
 
 	@Test

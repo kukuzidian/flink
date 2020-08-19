@@ -18,6 +18,7 @@
 
 package org.apache.flink.table.planner.codegen.calls
 
+import org.apache.flink.table.api.ValidationException
 import org.apache.flink.table.data.binary.BinaryArrayData
 import org.apache.flink.table.data.util.{DataFormatConverters, MapDataUtil}
 import org.apache.flink.table.data.writer.{BinaryArrayWriter, BinaryRowWriter}
@@ -25,7 +26,7 @@ import org.apache.flink.table.planner.codegen.CodeGenUtils.{binaryRowFieldSetAcc
 import org.apache.flink.table.planner.codegen.GenerateUtils._
 import org.apache.flink.table.planner.codegen.GeneratedExpression.{ALWAYS_NULL, NEVER_NULL, NO_CODE}
 import org.apache.flink.table.planner.codegen.{CodeGenException, CodeGeneratorContext, GeneratedExpression}
-import org.apache.flink.table.planner.typeutils.TypeCoercion
+import org.apache.flink.table.planner.utils.JavaScalaConversionUtil.toScala
 import org.apache.flink.table.runtime.types.LogicalTypeDataTypeConverter.fromLogicalTypeToDataType
 import org.apache.flink.table.runtime.types.PlannerTypeUtils
 import org.apache.flink.table.runtime.types.PlannerTypeUtils.{isInteroperable, isPrimitive}
@@ -33,13 +34,16 @@ import org.apache.flink.table.runtime.typeutils.TypeCheckUtils
 import org.apache.flink.table.runtime.typeutils.TypeCheckUtils._
 import org.apache.flink.table.types.logical.LogicalTypeRoot._
 import org.apache.flink.table.types.logical._
+import org.apache.flink.table.types.logical.utils.LogicalTypeMerging.findCommonType
 import org.apache.flink.util.Preconditions.checkArgument
+
 import org.apache.calcite.avatica.util.DateTimeUtils.MILLIS_PER_DAY
 import org.apache.calcite.avatica.util.{DateTimeUtils, TimeUnitRange}
 import org.apache.calcite.util.BuiltInMethod
 
 import java.lang.{StringBuilder => JStringBuilder}
 import java.nio.charset.StandardCharsets
+import java.util.Arrays.asList
 
 import scala.collection.JavaConversions._
 
@@ -298,9 +302,8 @@ object ScalarOperatorGens {
     if (haystack.forall(_.literal)) {
 
       // determine common numeric type
-      val widerType = TypeCoercion.widerTypeOf(
-        needle.resultType,
-        haystack.head.resultType)
+      val widerType = toScala(findCommonType(asList(needle.resultType, haystack.head.resultType)))
+        .orElse(throw new CodeGenException(s"Unable to find common type of $needle and $haystack."))
 
       // we need to normalize the values for the hash set
       val castNumeric = widerType match {
@@ -383,7 +386,13 @@ object ScalarOperatorGens {
     }
     // map types
     else if (isMap(left.resultType) && canEqual) {
-      generateMapComparison(ctx, left, right)
+      val mapType = left.resultType.asInstanceOf[MapType]
+      generateMapComparison(ctx, left, right, mapType.getKeyType, mapType.getValueType)
+    }
+    // multiset types
+    else if (isMultiset(left.resultType) && canEqual) {
+      val multisetType = left.resultType.asInstanceOf[MultisetType]
+      generateMapComparison(ctx, left, right, multisetType.getElementType, new IntType(false))
     }
     // comparable types of same type
     else if (isComparable(left.resultType) && canEqual) {
@@ -1073,7 +1082,7 @@ object ScalarOperatorGens {
     // String -> binary
     case (VARCHAR | CHAR, VARBINARY | BINARY) =>
       generateUnaryOperatorIfNotNull(ctx, targetType, operand) {
-        operandTerm => s"$operandTerm.getBytes()"
+        operandTerm => s"$operandTerm.toBytes()"
       }
 
     // Note: SQL2003 $6.12 - casting is not allowed between boolean and numeric types.
@@ -1634,6 +1643,10 @@ object ScalarOperatorGens {
     GeneratedExpression(arrayTerm, GeneratedExpression.NEVER_NULL, code, arrayType)
   }
 
+  /**
+   * Return null when array index out of bounds which follows Calcite's behaviour.
+   * @see [[org.apache.calcite.sql.fun.SqlStdOperatorTable.ITEM]]
+   */
   def generateArrayElementAt(
       ctx: CodeGeneratorContext,
       array: GeneratedExpression,
@@ -1643,19 +1656,25 @@ object ScalarOperatorGens {
     val resultTypeTerm = primitiveTypeTermForType(componentInfo)
     val defaultTerm = primitiveDefaultValue(componentInfo)
 
+    index.literalValue match {
+      case Some(v: Int) if v < 1 =>
+        throw new ValidationException(
+          s"Array element access needs an index starting at 1 but was $v.")
+      case _ => //nothing
+    }
     val idxStr = s"${index.resultTerm} - 1"
     val arrayIsNull = s"${array.resultTerm}.isNullAt($idxStr)"
     val arrayGet =
       rowFieldReadAccess(ctx, idxStr, array.resultTerm, componentInfo)
 
     val arrayAccessCode =
-      s"""
-         |${array.code}
-         |${index.code}
-         |boolean $nullTerm = ${array.nullTerm} || ${index.nullTerm} || $arrayIsNull;
-         |$resultTypeTerm $resultTerm = $nullTerm ? $defaultTerm : $arrayGet;
-         |""".stripMargin
-
+    s"""
+        |${array.code}
+        |${index.code}
+        |boolean $nullTerm = ${array.nullTerm} || ${index.nullTerm} ||
+        |   $idxStr < 0 || $idxStr >= ${array.resultTerm}.size() || $arrayIsNull;
+        |$resultTypeTerm $resultTerm = $nullTerm ? $defaultTerm : $arrayGet;
+        |""".stripMargin
     GeneratedExpression(resultTerm, nullTerm, arrayAccessCode, componentInfo)
   }
 
@@ -2133,7 +2152,10 @@ object ScalarOperatorGens {
   private def generateMapComparison(
       ctx: CodeGeneratorContext,
       left: GeneratedExpression,
-      right: GeneratedExpression): GeneratedExpression =
+      right: GeneratedExpression,
+      keyType: LogicalType,
+      valueType: LogicalType)
+    : GeneratedExpression =
     generateCallWithStmtIfArgsNotNull(ctx, new BooleanType(), Seq(left, right)) {
       args =>
         val leftTerm = args.head
@@ -2141,33 +2163,30 @@ object ScalarOperatorGens {
 
         val resultTerm = newName("compareResult")
 
-        val mapType = left.resultType.asInstanceOf[MapType]
-        val mapCls = classOf[java.util.Map[AnyRef, AnyRef]].getCanonicalName
-        val keyCls = boxedTypeTermForType(mapType.getKeyType)
-        val valueCls = boxedTypeTermForType(mapType.getValueType)
+        val mapCls = className[java.util.Map[_, _]]
+        val keyCls = boxedTypeTermForType(keyType)
+        val valueCls = boxedTypeTermForType(valueType)
 
         val leftMapTerm = newName("leftMap")
         val leftKeyTerm = newName("leftKey")
         val leftValueTerm = newName("leftValue")
         val leftValueNullTerm = newName("leftValueIsNull")
         val leftValueExpr =
-          GeneratedExpression(leftValueTerm, leftValueNullTerm, "", mapType.getValueType)
+          GeneratedExpression(leftValueTerm, leftValueNullTerm, "", valueType)
 
         val rightMapTerm = newName("rightMap")
         val rightValueTerm = newName("rightValue")
         val rightValueNullTerm = newName("rightValueIsNull")
         val rightValueExpr =
-          GeneratedExpression(rightValueTerm, rightValueNullTerm, "", mapType.getValueType)
+          GeneratedExpression(rightValueTerm, rightValueNullTerm, "", valueType)
 
         val entryTerm = newName("entry")
         val entryCls = classOf[java.util.Map.Entry[AnyRef, AnyRef]].getCanonicalName
         val valueEqualsExpr = generateEquals(ctx, leftValueExpr, rightValueExpr)
 
         val internalTypeCls = classOf[LogicalType].getCanonicalName
-        val keyTypeTerm =
-          ctx.addReusableObject(mapType.getKeyType, "keyType", internalTypeCls)
-        val valueTypeTerm =
-          ctx.addReusableObject(mapType.getValueType, "valueType", internalTypeCls)
+        val keyTypeTerm = ctx.addReusableObject(keyType, "keyType", internalTypeCls)
+        val valueTypeTerm = ctx.addReusableObject(valueType, "valueType", internalTypeCls)
         val mapDataUtil = className[MapDataUtil]
 
         val stmt =

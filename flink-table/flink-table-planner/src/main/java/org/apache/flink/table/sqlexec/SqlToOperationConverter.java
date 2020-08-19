@@ -36,7 +36,10 @@ import org.apache.flink.sql.parser.ddl.SqlTableOption;
 import org.apache.flink.sql.parser.ddl.SqlUseCatalog;
 import org.apache.flink.sql.parser.ddl.SqlUseDatabase;
 import org.apache.flink.sql.parser.dml.RichSqlInsert;
+import org.apache.flink.sql.parser.dql.SqlRichDescribeTable;
 import org.apache.flink.sql.parser.dql.SqlShowCatalogs;
+import org.apache.flink.sql.parser.dql.SqlShowCurrentCatalog;
+import org.apache.flink.sql.parser.dql.SqlShowCurrentDatabase;
 import org.apache.flink.sql.parser.dql.SqlShowDatabases;
 import org.apache.flink.sql.parser.dql.SqlShowFunctions;
 import org.apache.flink.sql.parser.dql.SqlShowTables;
@@ -61,9 +64,13 @@ import org.apache.flink.table.catalog.ObjectIdentifier;
 import org.apache.flink.table.catalog.UnresolvedIdentifier;
 import org.apache.flink.table.catalog.exceptions.DatabaseNotExistException;
 import org.apache.flink.table.operations.CatalogSinkModifyOperation;
+import org.apache.flink.table.operations.DescribeTableOperation;
+import org.apache.flink.table.operations.ExplainOperation;
 import org.apache.flink.table.operations.Operation;
 import org.apache.flink.table.operations.PlannerQueryOperation;
 import org.apache.flink.table.operations.ShowCatalogsOperation;
+import org.apache.flink.table.operations.ShowCurrentCatalogOperation;
+import org.apache.flink.table.operations.ShowCurrentDatabaseOperation;
 import org.apache.flink.table.operations.ShowDatabasesOperation;
 import org.apache.flink.table.operations.ShowFunctionsOperation;
 import org.apache.flink.table.operations.ShowTablesOperation;
@@ -91,6 +98,9 @@ import org.apache.flink.util.StringUtils;
 import org.apache.calcite.rel.RelRoot;
 import org.apache.calcite.rel.type.RelDataType;
 import org.apache.calcite.sql.SqlDialect;
+import org.apache.calcite.sql.SqlExplain;
+import org.apache.calcite.sql.SqlExplainFormat;
+import org.apache.calcite.sql.SqlExplainLevel;
 import org.apache.calcite.sql.SqlIdentifier;
 import org.apache.calcite.sql.SqlKind;
 import org.apache.calcite.sql.SqlNode;
@@ -175,8 +185,12 @@ public class SqlToOperationConverter {
 			return Optional.of(converter.convertAlterDatabase((SqlAlterDatabase) validated));
 		} else if (validated instanceof SqlShowCatalogs) {
 			return Optional.of(converter.convertShowCatalogs((SqlShowCatalogs) validated));
+		} else if (validated instanceof SqlShowCurrentCatalog) {
+			return Optional.of(converter.convertShowCurrentCatalog((SqlShowCurrentCatalog) validated));
 		} else if (validated instanceof SqlShowDatabases) {
 			return Optional.of(converter.convertShowDatabases((SqlShowDatabases) validated));
+		} else if (validated instanceof SqlShowCurrentDatabase) {
+			return Optional.of(converter.convertShowCurrentDatabase((SqlShowCurrentDatabase) validated));
 		} else if (validated instanceof SqlShowTables) {
 			return Optional.of(converter.convertShowTables((SqlShowTables) validated));
 		} else if (validated instanceof SqlShowFunctions) {
@@ -187,6 +201,10 @@ public class SqlToOperationConverter {
 			return Optional.of(converter.convertDropView((SqlDropView) validated));
 		} else if (validated instanceof SqlShowViews) {
 			return Optional.of(converter.convertShowViews((SqlShowViews) validated));
+		} else if (validated instanceof SqlExplain) {
+			return Optional.of(converter.convertExplain((SqlExplain) validated));
+		} else if (validated instanceof SqlRichDescribeTable) {
+			return Optional.of(converter.convertDescribeTable((SqlRichDescribeTable) validated));
 		} else if (validated.getKind().belongsTo(SqlKind.QUERY)) {
 			return Optional.of(converter.convertSqlQuery(validated));
 		} else {
@@ -201,14 +219,18 @@ public class SqlToOperationConverter {
 	 */
 	private Operation convertCreateTable(SqlCreateTable sqlCreateTable) {
 		// primary key and unique keys are not supported
-		if ((sqlCreateTable.getPrimaryKeyList().size() > 0)
-			|| (sqlCreateTable.getUniqueKeysList().size() > 0)) {
+		if (sqlCreateTable.getFullConstraints().size() > 0) {
 			throw new SqlConversionException("Primary key and unique key are not supported yet.");
 		}
 
 		if (sqlCreateTable.getWatermark().isPresent()) {
 			throw new SqlConversionException(
 				"Watermark statement is not supported in Old Planner, please use Blink Planner instead.");
+		}
+
+		if (sqlCreateTable.getTableLike().isPresent()) {
+			throw new SqlConversionException(
+				"CREATE TABLE ... LIKE statement is not supported in Old Planner, please use Blink Planner instead.");
 		}
 
 		// set with properties
@@ -226,6 +248,8 @@ public class SqlToOperationConverter {
 			.map(p -> ((SqlIdentifier) p).getSimple())
 			.collect(Collectors.toList());
 
+		verifyPartitioningColumnsExist(tableSchema, partitionKeys);
+
 		CatalogTable catalogTable = new CatalogTableImpl(tableSchema,
 			partitionKeys,
 			properties,
@@ -239,6 +263,19 @@ public class SqlToOperationConverter {
 			catalogTable,
 			sqlCreateTable.isIfNotExists(),
 			sqlCreateTable.isTemporary());
+	}
+
+	private void verifyPartitioningColumnsExist(TableSchema mergedSchema, List<String> partitionKeys) {
+		for (String partitionKey : partitionKeys) {
+			if (!mergedSchema.getTableColumn(partitionKey).isPresent()) {
+				throw new ValidationException(
+					String.format(
+						"Partition column '%s' not defined in the table schema. Available columns: [%s]",
+						partitionKey,
+						Arrays.stream(mergedSchema.getFieldNames()).collect(Collectors.joining("', '", "'", "'"))
+					));
+			}
+		}
 	}
 
 	/** Convert DROP TABLE statement. */
@@ -276,8 +313,11 @@ public class SqlToOperationConverter {
 				throw new ValidationException(String.format("Table %s doesn't exist or is a temporary table.",
 					tableIdentifier.toString()));
 			}
+		} else {
+			throw new ValidationException(
+					String.format("[%s] needs to implement",
+							sqlAlterTable.toSqlString(CalciteSqlDialect.DEFAULT)));
 		}
-		return null;
 	}
 
 	/** Convert CREATE FUNCTION statement. */
@@ -459,9 +499,19 @@ public class SqlToOperationConverter {
 		return new ShowCatalogsOperation();
 	}
 
+	/** Convert SHOW CURRENT CATALOG statement. */
+	private Operation convertShowCurrentCatalog(SqlShowCurrentCatalog sqlShowCurrentCatalog) {
+		return new ShowCurrentCatalogOperation();
+	}
+
 	/** Convert SHOW DATABASES statement. */
 	private Operation convertShowDatabases(SqlShowDatabases sqlShowDatabases) {
 		return new ShowDatabasesOperation();
+	}
+
+	/** Convert SHOW CURRENT DATABASE statement. */
+	private Operation convertShowCurrentDatabase(SqlShowCurrentDatabase sqlShowCurrentDatabase) {
+		return new ShowCurrentDatabaseOperation();
 	}
 
 	/** Convert SHOW TABLES statement. */
@@ -532,6 +582,27 @@ public class SqlToOperationConverter {
 	/** Convert SHOW VIEWS statement. */
 	private Operation convertShowViews(SqlShowViews sqlShowViews) {
 		return new ShowViewsOperation();
+	}
+
+	/** Convert EXPLAIN statement. */
+	private Operation convertExplain(SqlExplain sqlExplain) {
+		Operation operation = convertSqlQuery(sqlExplain.getExplicandum());
+
+		if (sqlExplain.getDetailLevel() != SqlExplainLevel.EXPPLAN_ATTRIBUTES ||
+				sqlExplain.getDepth() != SqlExplain.Depth.PHYSICAL ||
+				sqlExplain.getFormat() != SqlExplainFormat.TEXT) {
+			throw new TableException("Only default behavior is supported now, EXPLAIN PLAN FOR xx");
+		}
+
+		return new ExplainOperation(operation);
+	}
+
+	/** Convert DESCRIBE [EXTENDED] [[catalogName.] dataBasesName].sqlIdentifier. */
+	private Operation convertDescribeTable(SqlRichDescribeTable sqlRichDescribeTable) {
+		UnresolvedIdentifier unresolvedIdentifier = UnresolvedIdentifier.of(sqlRichDescribeTable.fullTableName());
+		ObjectIdentifier identifier = catalogManager.qualifyIdentifier(unresolvedIdentifier);
+
+		return new DescribeTableOperation(identifier, sqlRichDescribeTable.isExtended());
 	}
 
 	/**

@@ -27,7 +27,7 @@ import org.apache.flink.configuration.Configuration;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.runtime.generated.GeneratedRecordComparator;
 import org.apache.flink.table.runtime.keyselector.RowDataKeySelector;
-import org.apache.flink.table.runtime.typeutils.RowDataTypeInfo;
+import org.apache.flink.table.runtime.typeutils.InternalTypeInfo;
 import org.apache.flink.table.runtime.util.LRUMap;
 import org.apache.flink.util.Collector;
 
@@ -51,7 +51,7 @@ public class AppendOnlyTopNFunction extends AbstractTopNFunction {
 
 	private static final Logger LOG = LoggerFactory.getLogger(AppendOnlyTopNFunction.class);
 
-	private final RowDataTypeInfo sortKeyType;
+	private final InternalTypeInfo<RowData> sortKeyType;
 	private final TypeSerializer<RowData> inputRowSer;
 	private final long cacheSize;
 
@@ -67,7 +67,7 @@ public class AppendOnlyTopNFunction extends AbstractTopNFunction {
 	public AppendOnlyTopNFunction(
 			long minRetentionTime,
 			long maxRetentionTime,
-			RowDataTypeInfo inputRowType,
+			InternalTypeInfo<RowData> inputRowType,
 			GeneratedRecordComparator sortKeyGeneratedRecordComparator,
 			RowDataKeySelector sortKeySelector,
 			RankType rankType,
@@ -113,7 +113,10 @@ public class AppendOnlyTopNFunction extends AbstractTopNFunction {
 			buffer.put(sortKey, inputRowSer.copy(input));
 			Collection<RowData> inputs = buffer.get(sortKey);
 			// update data state
-			dataState.put(sortKey, (List<RowData>) inputs);
+			// copy a new collection to avoid mutating state values, see CopyOnWriteStateMap,
+			// otherwise, the result might be corrupt.
+			// don't need to perform a deep copy, because RowData elements will not be updated
+			dataState.put(sortKey, new ArrayList<>(inputs));
 			if (outputRankNumber || hasOffset()) {
 				// the without-number-algorithm can't handle topN with offset,
 				// so use the with-number-algorithm to handle offset
@@ -208,16 +211,22 @@ public class AppendOnlyTopNFunction extends AbstractTopNFunction {
 		if (buffer.getCurrentTopNum() > rankEnd) {
 			Map.Entry<RowData, Collection<RowData>> lastEntry = buffer.lastEntry();
 			RowData lastKey = lastEntry.getKey();
-			List<RowData> lastList = (List<RowData>) lastEntry.getValue();
+			Collection<RowData> lastList = lastEntry.getValue();
+			RowData lastElement = buffer.lastElement();
+			int size = lastList.size();
 			// remove last one
-			RowData lastElement = lastList.remove(lastList.size() - 1);
-			if (lastList.isEmpty()) {
+			if (size <= 1) {
 				buffer.removeAll(lastKey);
 				dataState.remove(lastKey);
 			} else {
-				dataState.put(lastKey, lastList);
+				buffer.removeLast();
+				// last element has been removed from lastList, we have to copy a new collection
+				// for lastList to avoid mutating state values, see CopyOnWriteStateMap,
+				// otherwise, the result might be corrupt.
+				// don't need to perform a deep copy, because RowData elements will not be updated
+				dataState.put(lastKey, new ArrayList<>(lastList));
 			}
-			if (input.equals(lastElement)) {
+			if (size == 0 || input.equals(lastElement)) {
 				return;
 			} else {
 				// lastElement shouldn't be null

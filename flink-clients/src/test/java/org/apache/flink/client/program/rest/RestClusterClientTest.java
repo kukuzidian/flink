@@ -39,10 +39,13 @@ import org.apache.flink.runtime.clusterframework.ApplicationStatus;
 import org.apache.flink.runtime.concurrent.FutureUtils;
 import org.apache.flink.runtime.dispatcher.DispatcherGateway;
 import org.apache.flink.runtime.jobgraph.JobGraph;
+import org.apache.flink.runtime.jobgraph.OperatorID;
 import org.apache.flink.runtime.jobmaster.JobResult;
 import org.apache.flink.runtime.messages.Acknowledge;
 import org.apache.flink.runtime.messages.webmonitor.JobDetails;
 import org.apache.flink.runtime.messages.webmonitor.MultipleJobsDetails;
+import org.apache.flink.runtime.operators.coordination.CoordinationRequest;
+import org.apache.flink.runtime.operators.coordination.CoordinationResponse;
 import org.apache.flink.runtime.rest.FileUpload;
 import org.apache.flink.runtime.rest.HttpMethodWrapper;
 import org.apache.flink.runtime.rest.RestClient;
@@ -76,11 +79,16 @@ import org.apache.flink.runtime.rest.messages.job.JobExecutionResultResponseBody
 import org.apache.flink.runtime.rest.messages.job.JobSubmitHeaders;
 import org.apache.flink.runtime.rest.messages.job.JobSubmitRequestBody;
 import org.apache.flink.runtime.rest.messages.job.JobSubmitResponseBody;
+import org.apache.flink.runtime.rest.messages.job.coordination.ClientCoordinationHeaders;
+import org.apache.flink.runtime.rest.messages.job.coordination.ClientCoordinationMessageParameters;
+import org.apache.flink.runtime.rest.messages.job.coordination.ClientCoordinationRequestBody;
+import org.apache.flink.runtime.rest.messages.job.coordination.ClientCoordinationResponseBody;
 import org.apache.flink.runtime.rest.messages.job.savepoints.SavepointDisposalRequest;
 import org.apache.flink.runtime.rest.messages.job.savepoints.SavepointDisposalStatusHeaders;
 import org.apache.flink.runtime.rest.messages.job.savepoints.SavepointDisposalStatusMessageParameters;
 import org.apache.flink.runtime.rest.messages.job.savepoints.SavepointDisposalTriggerHeaders;
 import org.apache.flink.runtime.rest.util.RestClientException;
+import org.apache.flink.runtime.rest.util.TestRestServerEndpoint;
 import org.apache.flink.runtime.rpc.RpcUtils;
 import org.apache.flink.runtime.util.ExecutorThreadFactory;
 import org.apache.flink.runtime.webmonitor.TestingDispatcherGateway;
@@ -701,6 +709,74 @@ public class RestClusterClientTest extends TestLogger {
 		}
 	}
 
+	@Test
+	public void testSendCoordinationRequest() throws Exception {
+		final TestClientCoordinationHandler handler = new TestClientCoordinationHandler();
+
+		try (TestRestServerEndpoint restServerEndpoint = createRestServerEndpoint(handler)) {
+			RestClusterClient<?> restClusterClient = createRestClusterClient(restServerEndpoint.getServerAddress().getPort());
+
+			String payload = "testing payload";
+			TestCoordinationRequest<String> request  = new TestCoordinationRequest<>(payload);
+			try {
+				CompletableFuture<CoordinationResponse> future =
+					restClusterClient.sendCoordinationRequest(jobId, new OperatorID(), request);
+				TestCoordinationResponse response = (TestCoordinationResponse) future.get();
+
+				assertEquals(payload, response.payload);
+			} finally {
+				restClusterClient.close();
+			}
+		}
+	}
+
+	private class TestClientCoordinationHandler extends TestHandler<ClientCoordinationRequestBody, ClientCoordinationResponseBody, ClientCoordinationMessageParameters> {
+
+		private TestClientCoordinationHandler() {
+			super(ClientCoordinationHeaders.getInstance());
+		}
+
+		@Override
+		@SuppressWarnings("unchecked")
+		protected CompletableFuture<ClientCoordinationResponseBody> handleRequest(@Nonnull HandlerRequest<ClientCoordinationRequestBody, ClientCoordinationMessageParameters> request, @Nonnull DispatcherGateway gateway) throws RestHandlerException {
+			try {
+				TestCoordinationRequest req =
+					(TestCoordinationRequest) request
+						.getRequestBody()
+						.getSerializedCoordinationRequest()
+						.deserializeValue(getClass().getClassLoader());
+				TestCoordinationResponse resp = new TestCoordinationResponse(req.payload);
+				return CompletableFuture.completedFuture(
+					new ClientCoordinationResponseBody(
+						new SerializedValue<>(resp)));
+			} catch (Exception e) {
+				return FutureUtils.completedExceptionally(e);
+			}
+		}
+	}
+
+	private static class TestCoordinationRequest<T> implements CoordinationRequest {
+
+		private static final long serialVersionUID = 1L;
+
+		private final T payload;
+
+		private TestCoordinationRequest(T payload) {
+			this.payload = payload;
+		}
+	}
+
+	private static class TestCoordinationResponse<T> implements CoordinationResponse {
+
+		private static final long serialVersionUID = 1L;
+
+		private final T payload;
+
+		private TestCoordinationResponse(T payload) {
+			this.payload = payload;
+		}
+	}
+
 	private class TestAccumulatorHandler extends TestHandler<EmptyRequestBody, JobAccumulatorsInfo, JobAccumulatorsMessageParameters> {
 
 		public TestAccumulatorHandler() {
@@ -770,7 +846,10 @@ public class RestClusterClientTest extends TestLogger {
 
 	private TestRestServerEndpoint createRestServerEndpoint(
 			final AbstractRestHandler<?, ?, ?, ?>... abstractRestHandlers) throws Exception {
-		return TestRestServerEndpoint.createAndStartRestServerEndpoint(restServerEndpointConfiguration, abstractRestHandlers);
+		TestRestServerEndpoint.Builder builder = TestRestServerEndpoint.builder(restServerEndpointConfiguration);
+		Arrays.stream(abstractRestHandlers).forEach(builder::withHandler);
+
+		return builder.buildAndStart();
 	}
 
 	@FunctionalInterface

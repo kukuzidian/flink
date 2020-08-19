@@ -22,11 +22,14 @@ import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.common.time.Time;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.GlobalConfiguration;
+import org.apache.flink.configuration.TaskManagerOptions;
+import org.apache.flink.kubernetes.configuration.KubernetesConfigOptions;
 import org.apache.flink.kubernetes.configuration.KubernetesResourceManagerConfiguration;
 import org.apache.flink.kubernetes.kubeclient.FlinkKubeClient;
 import org.apache.flink.kubernetes.kubeclient.factory.KubernetesTaskManagerFactory;
 import org.apache.flink.kubernetes.kubeclient.parameters.KubernetesTaskManagerParameters;
 import org.apache.flink.kubernetes.kubeclient.resources.KubernetesPod;
+import org.apache.flink.kubernetes.kubeclient.resources.KubernetesWatch;
 import org.apache.flink.kubernetes.utils.KubernetesUtils;
 import org.apache.flink.runtime.clusterframework.ApplicationStatus;
 import org.apache.flink.runtime.clusterframework.BootstrapTools;
@@ -35,18 +38,20 @@ import org.apache.flink.runtime.clusterframework.TaskExecutorProcessSpec;
 import org.apache.flink.runtime.clusterframework.TaskExecutorProcessUtils;
 import org.apache.flink.runtime.clusterframework.types.ResourceID;
 import org.apache.flink.runtime.entrypoint.ClusterInformation;
+import org.apache.flink.runtime.externalresource.ExternalResourceUtils;
 import org.apache.flink.runtime.heartbeat.HeartbeatServices;
 import org.apache.flink.runtime.highavailability.HighAvailabilityServices;
 import org.apache.flink.runtime.io.network.partition.ResourceManagerPartitionTrackerFactory;
 import org.apache.flink.runtime.metrics.groups.ResourceManagerMetricGroup;
-import org.apache.flink.runtime.resourcemanager.ActiveResourceManager;
 import org.apache.flink.runtime.resourcemanager.JobLeaderIdService;
 import org.apache.flink.runtime.resourcemanager.ResourceManager;
 import org.apache.flink.runtime.resourcemanager.WorkerResourceSpec;
+import org.apache.flink.runtime.resourcemanager.active.LegacyActiveResourceManager;
 import org.apache.flink.runtime.resourcemanager.exceptions.ResourceManagerException;
 import org.apache.flink.runtime.resourcemanager.slotmanager.SlotManager;
 import org.apache.flink.runtime.rpc.FatalErrorHandler;
 import org.apache.flink.runtime.rpc.RpcService;
+import org.apache.flink.util.ExceptionUtils;
 import org.apache.flink.util.Preconditions;
 
 import org.slf4j.Logger;
@@ -57,12 +62,11 @@ import javax.annotation.Nullable;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.CompletableFuture;
 
 /**
  * Kubernetes specific implementation of the {@link ResourceManager}.
  */
-public class KubernetesResourceManager extends ActiveResourceManager<KubernetesWorkerNode>
+public class KubernetesResourceManager extends LegacyActiveResourceManager<KubernetesWorkerNode>
 	implements FlinkKubeClient.PodCallbackHandler {
 
 	private static final Logger LOG = LoggerFactory.getLogger(KubernetesResourceManager.class);
@@ -86,6 +90,8 @@ public class KubernetesResourceManager extends ActiveResourceManager<KubernetesW
 
 	/** Map from pod name to worker resource. */
 	private final Map<String, WorkerResourceSpec> podWorkerResources;
+
+	private KubernetesWatch podsWatch;
 
 	public KubernetesResourceManager(
 			RpcService rpcService,
@@ -129,21 +135,29 @@ public class KubernetesResourceManager extends ActiveResourceManager<KubernetesW
 	protected void initialize() throws ResourceManagerException {
 		recoverWorkerNodesFromPreviousAttempts();
 
-		kubeClient.watchPodsAndDoCallback(KubernetesUtils.getTaskManagerLabels(clusterId), this);
+		podsWatch = kubeClient.watchPodsAndDoCallback(
+			KubernetesUtils.getTaskManagerLabels(clusterId),
+			this);
 	}
 
 	@Override
-	public CompletableFuture<Void> onStop() {
+	public void terminate() throws Exception {
 		// shut down all components
-		Throwable exception = null;
+		Exception exception = null;
+
+		try {
+			podsWatch.close();
+		} catch (Exception e) {
+			exception = e;
+		}
 
 		try {
 			kubeClient.close();
-		} catch (Throwable t) {
-			exception = t;
+		} catch (Exception e) {
+			exception = ExceptionUtils.firstOrSuppressed(e, exception);
 		}
 
-		return getStopTerminationFutureOrCompletedExceptionally(exception);
+		ExceptionUtils.tryRethrowException(exception);
 	}
 
 	@Override
@@ -193,17 +207,17 @@ public class KubernetesResourceManager extends ActiveResourceManager<KubernetesW
 					podWorkerResources.get(podName),
 					"Unrecognized pod {}. Pods from previous attempt should have already been added.", podName);
 
-				final int pendingNum = getNumPendingWorkersFor(workerResourceSpec);
+				final int pendingNum = getNumRequestedNotAllocatedWorkersFor(workerResourceSpec);
 				Preconditions.checkState(pendingNum > 0, "Should not receive more workers than requested.");
 
-				notifyNewWorkerAllocated(workerResourceSpec);
+				notifyNewWorkerAllocated(workerResourceSpec, resourceID);
 				final KubernetesWorkerNode worker = new KubernetesWorkerNode(resourceID);
 				workerNodes.put(resourceID, worker);
 
 				log.info("Received new TaskManager pod: {}", podName);
 			}
 			log.info("Received {} new TaskManager pods. Remaining pending pod requests: {}",
-				pods.size() - duplicatePodNum, getNumPendingWorkers());
+				pods.size() - duplicatePodNum, getNumRequestedNotAllocatedWorkers());
 		});
 	}
 
@@ -220,6 +234,11 @@ public class KubernetesResourceManager extends ActiveResourceManager<KubernetesW
 	@Override
 	public void onError(List<KubernetesPod> pods) {
 		runAsync(() -> pods.forEach(this::removePodAndTryRestartIfRequired));
+	}
+
+	@Override
+	public void handleFatalError(Throwable throwable) {
+		onFatalError(throwable);
 	}
 
 	@VisibleForTesting
@@ -248,7 +267,7 @@ public class KubernetesResourceManager extends ActiveResourceManager<KubernetesW
 			createKubernetesTaskManagerParameters(workerResourceSpec);
 
 		podWorkerResources.put(parameters.getPodName(), workerResourceSpec);
-		final int pendingWorkerNum = notifyNewWorkerRequested(workerResourceSpec);
+		final int pendingWorkerNum = notifyNewWorkerRequested(workerResourceSpec).getNumNotAllocated();
 
 		log.info("Requesting new TaskManager pod with <{},{}>. Number pending requests {}.",
 			parameters.getTaskManagerMemoryMB(),
@@ -289,14 +308,18 @@ public class KubernetesResourceManager extends ActiveResourceManager<KubernetesW
 		final ContaineredTaskManagerParameters taskManagerParameters =
 			ContaineredTaskManagerParameters.create(flinkConfig, taskExecutorProcessSpec);
 
+		final Configuration taskManagerConfig = new Configuration(flinkConfig);
+		taskManagerConfig.set(TaskManagerOptions.TASK_MANAGER_RESOURCE_ID, podName);
+
 		final String dynamicProperties =
-			BootstrapTools.getDynamicPropertiesAsString(flinkClientConfig, flinkConfig);
+			BootstrapTools.getDynamicPropertiesAsString(flinkClientConfig, taskManagerConfig);
 
 		return new KubernetesTaskManagerParameters(
 			flinkConfig,
 			podName,
 			dynamicProperties,
-			taskManagerParameters);
+			taskManagerParameters,
+			ExternalResourceUtils.getExternalResources(flinkConfig, KubernetesConfigOptions.EXTERNAL_RESOURCE_KUBERNETES_CONFIG_KEY_SUFFIX));
 	}
 
 	/**
@@ -307,7 +330,7 @@ public class KubernetesResourceManager extends ActiveResourceManager<KubernetesW
 			final WorkerResourceSpec workerResourceSpec = entry.getKey();
 			final int requiredTaskManagers = entry.getValue();
 
-			while (requiredTaskManagers > getNumPendingWorkersFor(workerResourceSpec)) {
+			while (requiredTaskManagers > getNumRequestedNotRegisteredWorkersFor(workerResourceSpec)) {
 				requestKubernetesPod(workerResourceSpec);
 			}
 		}
@@ -340,6 +363,8 @@ public class KubernetesResourceManager extends ActiveResourceManager<KubernetesW
 			notifyNewWorkerAllocationFailed(
 				Preconditions.checkNotNull(workerResourceSpec,
 					"Worker resource spec of current attempt pending worker should be known."));
+		} else {
+			notifyAllocatedWorkerStopped(resourceId);
 		}
 	}
 

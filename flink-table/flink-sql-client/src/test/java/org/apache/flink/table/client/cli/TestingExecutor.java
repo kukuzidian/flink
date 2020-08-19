@@ -18,17 +18,20 @@
 package org.apache.flink.table.client.cli;
 
 import org.apache.flink.api.java.tuple.Tuple2;
-import org.apache.flink.table.api.TableSchema;
-import org.apache.flink.table.client.config.entries.ViewEntry;
+import org.apache.flink.table.api.TableResult;
+import org.apache.flink.table.client.cli.utils.SqlParserHelper;
 import org.apache.flink.table.client.gateway.Executor;
 import org.apache.flink.table.client.gateway.ProgramTargetDescriptor;
 import org.apache.flink.table.client.gateway.ResultDescriptor;
 import org.apache.flink.table.client.gateway.SessionContext;
 import org.apache.flink.table.client.gateway.SqlExecutionException;
 import org.apache.flink.table.client.gateway.TypedResult;
+import org.apache.flink.table.delegation.Parser;
 import org.apache.flink.types.Row;
-import org.apache.flink.util.function.BiConsumerWithException;
+import org.apache.flink.util.function.BiFunctionWithException;
+import org.apache.flink.util.function.FunctionWithException;
 import org.apache.flink.util.function.SupplierWithException;
+import org.apache.flink.util.function.TriFunctionWithException;
 
 import java.util.List;
 import java.util.Map;
@@ -49,23 +52,32 @@ class TestingExecutor implements Executor {
 	private int numRetrieveResultPageCalls = 0;
 	private final List<SupplierWithException<List<Row>, SqlExecutionException>> resultPages;
 
-	private int numUseCatalogCalls = 0;
-	private final BiConsumerWithException<String, String, SqlExecutionException> useCatalogConsumer;
+	private int numExecuteSqlCalls = 0;
+	private final BiFunctionWithException<String, String, TableResult, SqlExecutionException> executeSqlConsumer;
 
-	private int numUseDatabaseCalls = 0;
-	private BiConsumerWithException<String, String, SqlExecutionException> useDatabaseConsumer;
+	private int numSetSessionPropertyCalls = 0;
+	private final TriFunctionWithException<String, String, String, Void, SqlExecutionException> setSessionPropertyFunction;
+
+	private int numResetSessionPropertiesCalls = 0;
+	private final FunctionWithException<String, Void, SqlExecutionException> resetSessionPropertiesFunction;
+
+	private final SqlParserHelper helper;
 
 	TestingExecutor(
 			List<SupplierWithException<TypedResult<List<Tuple2<Boolean, Row>>>, SqlExecutionException>> resultChanges,
 			List<SupplierWithException<TypedResult<Integer>, SqlExecutionException>> snapshotResults,
 			List<SupplierWithException<List<Row>, SqlExecutionException>> resultPages,
-			BiConsumerWithException<String, String, SqlExecutionException> useCatalogConsumer,
-			BiConsumerWithException<String, String, SqlExecutionException> useDatabaseConsumer) {
+			BiFunctionWithException<String, String, TableResult, SqlExecutionException> executeSqlConsumer,
+			TriFunctionWithException<String, String, String, Void, SqlExecutionException> setSessionPropertyFunction,
+			FunctionWithException<String, Void, SqlExecutionException> resetSessionPropertiesFunction) {
 		this.resultChanges = resultChanges;
 		this.snapshotResults = snapshotResults;
 		this.resultPages = resultPages;
-		this.useCatalogConsumer = useCatalogConsumer;
-		this.useDatabaseConsumer = useDatabaseConsumer;
+		this.executeSqlConsumer = executeSqlConsumer;
+		this.setSessionPropertyFunction = setSessionPropertyFunction;
+		this.resetSessionPropertiesFunction = resetSessionPropertiesFunction;
+		helper = new SqlParserHelper();
+		helper.registerTables();
 	}
 
 	@Override
@@ -89,18 +101,6 @@ class TestingExecutor implements Executor {
 	}
 
 	@Override
-	public void useCatalog(String sessionId, String catalogName) throws SqlExecutionException {
-		numUseCatalogCalls++;
-		useCatalogConsumer.accept(sessionId, catalogName);
-	}
-
-	@Override
-	public void useDatabase(String sessionId, String databaseName) throws SqlExecutionException {
-		numUseDatabaseCalls++;
-		useDatabaseConsumer.accept(sessionId, databaseName);
-	}
-
-	@Override
 	public void start() throws SqlExecutionException {
 	}
 
@@ -120,56 +120,20 @@ class TestingExecutor implements Executor {
 
 	@Override
 	public void resetSessionProperties(String sessionId) throws SqlExecutionException {
+		numResetSessionPropertiesCalls++;
+		resetSessionPropertiesFunction.apply(sessionId);
 	}
 
 	@Override
 	public void setSessionProperty(String sessionId, String key, String value) throws SqlExecutionException {
+		numSetSessionPropertyCalls++;
+		setSessionPropertyFunction.apply(sessionId, key, value);
 	}
 
 	@Override
-	public void addView(String sessionId, String name, String query) throws SqlExecutionException {
-	}
-
-	@Override
-	public void removeView(String sessionId, String name) throws SqlExecutionException {
-	}
-
-	@Override
-	public Map<String, ViewEntry> listViews(String sessionId) throws SqlExecutionException {
-		throw new UnsupportedOperationException("Not implemented.");
-	}
-
-	@Override
-	public List<String> listCatalogs(String sessionid) throws SqlExecutionException {
-		throw new UnsupportedOperationException("Not implemented.");
-	}
-
-	@Override
-	public List<String> listDatabases(String sessionId) throws SqlExecutionException {
-		throw new UnsupportedOperationException("Not implemented.");
-	}
-
-	@Override
-	public void createTable(String sessionId, String ddl) throws SqlExecutionException {
-	}
-
-	@Override
-	public void dropTable(String sessionId, String ddl) throws SqlExecutionException {
-	}
-
-	@Override
-	public List<String> listTables(String sessionId) throws SqlExecutionException {
-		throw new UnsupportedOperationException("Not implemented.");
-	}
-
-	@Override
-	public List<String> listUserDefinedFunctions(String sessionId) throws SqlExecutionException {
-		throw new UnsupportedOperationException("Not implemented.");
-	}
-
-	@Override
-	public List<String> listFunctions(String sessionId) throws SqlExecutionException {
-		throw new UnsupportedOperationException("Not implemented.");
+	public TableResult executeSql(String sessionId, String statement) throws SqlExecutionException {
+		numExecuteSqlCalls++;
+		return executeSqlConsumer.apply(sessionId, statement);
 	}
 
 	@Override
@@ -178,13 +142,8 @@ class TestingExecutor implements Executor {
 	}
 
 	@Override
-	public TableSchema getTableSchema(String sessionId, String name) throws SqlExecutionException {
-		throw new UnsupportedOperationException("Not implemented.");
-	}
-
-	@Override
-	public String explainStatement(String sessionId, String statement) throws SqlExecutionException {
-		throw new UnsupportedOperationException("Not implemented.");
+	public Parser getSqlParser(String sessionId) {
+		return helper.getSqlParser();
 	}
 
 	@Override
@@ -218,11 +177,15 @@ class TestingExecutor implements Executor {
 		return numRetrieveResultPageCalls;
 	}
 
-	public int getNumUseCatalogCalls() {
-		return numUseCatalogCalls;
+	public int getNumExecuteSqlCalls() {
+		return numExecuteSqlCalls;
 	}
 
-	public int getNumUseDatabaseCalls() {
-		return numUseDatabaseCalls;
+	public int getNumSetSessionPropertyCalls() {
+		return numSetSessionPropertyCalls;
+	}
+
+	public int getNumResetSessionPropertiesCalls() {
+		return numResetSessionPropertiesCalls;
 	}
 }

@@ -25,12 +25,12 @@ under the License.
 	<parent>
 		<groupId>org.apache.flink</groupId>
 		<artifactId>flink-parent</artifactId>
-		<version>1.11-SNAPSHOT</version>
+		<version>1.12-SNAPSHOT</version>
 		<relativePath>..</relativePath>
 	</parent>
 
 	<artifactId>flink-python_${scala.binary.version}</artifactId>
-	<name>flink-python</name>
+	<name>Flink : Python</name>
 
 	<packaging>jar</packaging>
 
@@ -271,7 +271,6 @@ under the License.
 								<delete file="${project.basedir}/lib/pyflink.zip"/>
 								<delete dir="${project.basedir}/target"/>
 								<delete dir="${project.basedir}/build"/>
-								<delete dir="${project.basedir}/dist"/>
 								<delete dir="${project.basedir}/apache_flink.egg-info"/>
 							</target>
 						</configuration>
@@ -449,6 +448,22 @@ under the License.
 							</includes>
 							<outputDirectory>
 								${project.build.directory}/javaDDL
+							</outputDirectory>
+						</configuration>
+					</execution>
+					<execution>
+						<id>data-stream-test</id>
+						<goals>
+							<goal>test-jar</goal>
+						</goals>
+						<configuration>
+							<includes>
+								<include>**/DataStreamTestCollectSink.class</include>
+								<include>**/MyCustomSourceFunction.class</include>
+								<include>**/PartitionCustomTestMapFunction.class</include>
+							</includes>
+							<outputDirectory>
+								${project.build.directory}/data-stream-test
 							</outputDirectory>
 						</configuration>
 					</execution>

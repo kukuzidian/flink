@@ -23,6 +23,7 @@ import org.apache.flink.api.common.time.Time;
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.api.java.tuple.Tuple3;
 import org.apache.flink.api.java.tuple.Tuple6;
+import org.apache.flink.core.testutils.FlinkMatchers;
 import org.apache.flink.runtime.clusterframework.types.AllocationID;
 import org.apache.flink.runtime.clusterframework.types.ResourceID;
 import org.apache.flink.runtime.clusterframework.types.ResourceProfile;
@@ -44,7 +45,6 @@ import org.apache.flink.runtime.taskexecutor.TestingTaskExecutorGatewayBuilder;
 import org.apache.flink.runtime.taskexecutor.exceptions.SlotAllocationException;
 import org.apache.flink.runtime.taskexecutor.exceptions.SlotOccupiedException;
 import org.apache.flink.runtime.testingUtils.TestingUtils;
-import org.apache.flink.util.CoreMatchers;
 import org.apache.flink.util.FlinkException;
 import org.apache.flink.util.TestLogger;
 import org.apache.flink.util.function.FunctionUtils;
@@ -908,6 +908,7 @@ public class SlotManagerImplTest extends TestLogger {
 
 		try (final SlotManagerImpl slotManager = createSlotManagerBuilder()
 			.setTaskManagerTimeout(Time.of(taskManagerTimeout, TimeUnit.MILLISECONDS))
+			.setRedundantTaskManagerNum(0)
 			.build()) {
 
 			slotManager.start(resourceManagerId, mainThreadExecutor, resourceManagerActions);
@@ -976,6 +977,7 @@ public class SlotManagerImplTest extends TestLogger {
 
 		try (final SlotManager slotManager = createSlotManagerBuilder()
 			.setTaskManagerTimeout(taskManagerTimeout)
+			.setRedundantTaskManagerNum(0)
 			.buildAndStartWithDirectExec(resourceManagerId, resourceActions)) {
 
 			slotManager.registerTaskManager(taskExecutorConnection, initialSlotReport);
@@ -1299,6 +1301,7 @@ public class SlotManagerImplTest extends TestLogger {
 	private SlotManagerImpl createSlotManager(ResourceManagerId resourceManagerId, ResourceActions resourceManagerActions, int numSlotsPerWorker) {
 		SlotManagerImpl slotManager = createSlotManagerBuilder()
 			.setNumSlotsPerWorker(numSlotsPerWorker)
+			.setRedundantTaskManagerNum(0)
 			.buildAndStartWithDirectExec(resourceManagerId, resourceManagerActions);
 		return slotManager;
 	}
@@ -1483,7 +1486,7 @@ public class SlotManagerImplTest extends TestLogger {
 			slotManager.registerTaskManager(taskExecutorConnection, slotReport);
 			slotManager.unregisterTaskManager(taskExecutorConnection.getInstanceID(), failureCause);
 
-			assertThat(allocationFailureCause.get(), CoreMatchers.containsCause(failureCause));
+			assertThat(allocationFailureCause.get(), FlinkMatchers.containsCause(failureCause));
 		}
 	}
 
@@ -1595,6 +1598,7 @@ public class SlotManagerImplTest extends TestLogger {
 		try (SlotManagerImpl slotManager = createSlotManagerBuilder()
 			.setNumSlotsPerWorker(numberSlots)
 			.setMaxSlotNum(maxSlotNum)
+			.setRedundantTaskManagerNum(0)
 			.buildAndStartWithDirectExec(resourceManagerId, resourceManagerActions)) {
 			slotManager.registerTaskManager(taskManagerConnection1, slotReport1);
 			slotManager.registerTaskManager(taskManagerConnection2, slotReport2);
