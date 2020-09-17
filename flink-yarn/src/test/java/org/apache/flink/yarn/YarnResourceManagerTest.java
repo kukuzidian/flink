@@ -53,6 +53,7 @@ import org.apache.flink.runtime.rpc.RpcService;
 import org.apache.flink.runtime.rpc.TestingRpcService;
 import org.apache.flink.runtime.taskexecutor.SlotReport;
 import org.apache.flink.runtime.taskexecutor.SlotStatus;
+import org.apache.flink.runtime.taskexecutor.TaskExecutorMemoryConfiguration;
 import org.apache.flink.runtime.taskexecutor.TaskExecutorRegistrationSuccess;
 import org.apache.flink.runtime.taskexecutor.TestingTaskExecutorGatewayBuilder;
 import org.apache.flink.runtime.util.TestingFatalErrorHandler;
@@ -101,6 +102,7 @@ import java.util.Map;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ForkJoinPool;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -208,7 +210,8 @@ public class YarnResourceManagerTest extends TestLogger {
 				clusterInformation,
 				fatalErrorHandler,
 				webInterfaceUrl,
-				resourceManagerMetricGroup);
+				resourceManagerMetricGroup,
+				ForkJoinPool.commonPool());
 			this.testingYarnNMClientAsync = new TestingYarnNMClientAsync(this);
 			this.testingYarnAMRMClientAsync = new TestingYarnAMRMClientAsync(this);
 		}
@@ -408,7 +411,7 @@ public class YarnResourceManagerTest extends TestLogger {
 
 				final ResourceManagerGateway rmGateway = resourceManager.getSelfGateway(ResourceManagerGateway.class);
 
-				final ResourceID taskManagerResourceId = new ResourceID(testingContainer.getId().toString());
+				final ResourceID taskManagerResourceId = YarnResourceManager.getContainerResourceId(testingContainer);
 				final ResourceProfile resourceProfile = ResourceProfile.newBuilder()
 					.setCpuCores(10.0)
 					.setTaskHeapMemoryMB(1)
@@ -424,6 +427,7 @@ public class YarnResourceManagerTest extends TestLogger {
 					taskManagerResourceId,
 					dataPort,
 					hardwareDescription,
+					new TaskExecutorMemoryConfiguration(1L, 2L, 3L, 4L, 5L, 6L, 7L, 8L, 9L, 10L),
 					ResourceProfile.ZERO,
 					ResourceProfile.ZERO);
 				CompletableFuture<Integer> numberRegisteredSlotsFuture = rmGateway

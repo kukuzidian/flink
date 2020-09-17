@@ -28,6 +28,7 @@ import org.apache.flink.runtime.clusterframework.TaskExecutorProcessUtils;
 import org.apache.flink.runtime.clusterframework.types.ResourceID;
 import org.apache.flink.runtime.clusterframework.types.ResourceIDRetrievable;
 import org.apache.flink.runtime.concurrent.FutureUtils;
+import org.apache.flink.runtime.concurrent.ScheduledExecutor;
 import org.apache.flink.runtime.entrypoint.ClusterInformation;
 import org.apache.flink.runtime.heartbeat.HeartbeatServices;
 import org.apache.flink.runtime.highavailability.HighAvailabilityServices;
@@ -49,6 +50,9 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Executor;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
 
 /**
  * An active implementation of {@link ResourceManager}.
@@ -84,7 +88,8 @@ public class ActiveResourceManager<WorkerType extends ResourceIDRetrievable>
 			JobLeaderIdService jobLeaderIdService,
 			ClusterInformation clusterInformation,
 			FatalErrorHandler fatalErrorHandler,
-			ResourceManagerMetricGroup resourceManagerMetricGroup) {
+			ResourceManagerMetricGroup resourceManagerMetricGroup,
+			Executor ioExecutor) {
 		super(
 				rpcService,
 				resourceId,
@@ -96,7 +101,8 @@ public class ActiveResourceManager<WorkerType extends ResourceIDRetrievable>
 				clusterInformation,
 				fatalErrorHandler,
 				resourceManagerMetricGroup,
-				AkkaUtils.getTimeoutAsTime(Preconditions.checkNotNull(flinkConfig)));
+				AkkaUtils.getTimeoutAsTime(Preconditions.checkNotNull(flinkConfig)),
+				ioExecutor);
 
 		this.flinkConfig = flinkConfig;
 		this.resourceManagerDriver = resourceManagerDriver;
@@ -114,7 +120,7 @@ public class ActiveResourceManager<WorkerType extends ResourceIDRetrievable>
 		try {
 			resourceManagerDriver.initialize(
 					this,
-					command -> getMainThreadExecutor().execute(command)); // always execute on the current main thread executor.
+					new GatewayMainThreadExecutor());
 		} catch (Exception e) {
 			throw new ResourceManagerException("Cannot initialize resource provider.", e);
 		}
@@ -155,7 +161,7 @@ public class ActiveResourceManager<WorkerType extends ResourceIDRetrievable>
 		final ResourceID resourceId = worker.getResourceID();
 		resourceManagerDriver.releaseResource(worker);
 
-		log.info("Stopping worker {}.", resourceId);
+		log.info("Stopping worker {}.", resourceId.getStringWithMetadata());
 
 		clearStateForWorker(resourceId);
 
@@ -165,14 +171,14 @@ public class ActiveResourceManager<WorkerType extends ResourceIDRetrievable>
 	@Override
 	protected void onWorkerRegistered(WorkerType worker) {
 		final ResourceID resourceId = worker.getResourceID();
-		log.info("Worker {} is registered.", resourceId);
+		log.info("Worker {} is registered.", resourceId.getStringWithMetadata());
 
 		final WorkerResourceSpec workerResourceSpec = currentAttemptUnregisteredWorkers.remove(resourceId);
 		if (workerResourceSpec != null) {
 			final int count = pendingWorkerCounter.decreaseAndGet(workerResourceSpec);
 			log.info("Worker {} with resource spec {} was requested in current attempt." +
 							" Current pending count after registering: {}.",
-					resourceId,
+					resourceId.getStringWithMetadata(),
 					workerResourceSpec,
 					count);
 		}
@@ -184,20 +190,22 @@ public class ActiveResourceManager<WorkerType extends ResourceIDRetrievable>
 
 	@Override
 	public void onPreviousAttemptWorkersRecovered(Collection<WorkerType> recoveredWorkers) {
+		getMainThreadExecutor().assertRunningInMainThread();
 		log.info("Recovered {} workers from previous attempt.", recoveredWorkers.size());
 		for (WorkerType worker : recoveredWorkers) {
 			final ResourceID resourceId = worker.getResourceID();
 			workerNodeMap.put(resourceId, worker);
-			log.info("Worker {} recovered from previous attempt.", resourceId);
+			log.info("Worker {} recovered from previous attempt.", resourceId.getStringWithMetadata());
 		}
 	}
 
 	@Override
-	public void onWorkerTerminated(ResourceID resourceId) {
-		log.info("Worker {} is terminated.", resourceId);
+	public void onWorkerTerminated(ResourceID resourceId, String diagnostics) {
+		log.info("Worker {} is terminated. Diagnostics: {}", resourceId.getStringWithMetadata(), diagnostics);
 		if (clearStateForWorker(resourceId)) {
 			requestWorkerIfRequired();
 		}
+		closeTaskManagerConnection(resourceId, new Exception(diagnostics));
 	}
 
 	@Override
@@ -233,7 +241,7 @@ public class ActiveResourceManager<WorkerType extends ResourceIDRetrievable>
 						workerNodeMap.put(resourceId, worker);
 						currentAttemptUnregisteredWorkers.put(resourceId, workerResourceSpec);
 						log.info("Requested worker {} with resource spec {}.",
-								resourceId,
+								resourceId.getStringWithMetadata(),
 								workerResourceSpec);
 					}
 					return null;
@@ -249,7 +257,7 @@ public class ActiveResourceManager<WorkerType extends ResourceIDRetrievable>
 	private boolean clearStateForWorker(ResourceID resourceId) {
 		WorkerType worker = workerNodeMap.remove(resourceId);
 		if (worker == null) {
-			log.info("Ignore unrecognized worker {}.", resourceId);
+			log.info("Ignore unrecognized worker {}.", resourceId.getStringWithMetadata());
 			return false;
 		}
 
@@ -258,7 +266,7 @@ public class ActiveResourceManager<WorkerType extends ResourceIDRetrievable>
 			final int count = pendingWorkerCounter.decreaseAndGet(workerResourceSpec);
 			log.info("Worker {} with resource spec {} was requested in current attempt and has not registered." +
 							" Current pending count after removing: {}.",
-					resourceId,
+					resourceId.getStringWithMetadata(),
 					workerResourceSpec,
 					count);
 		}
@@ -273,6 +281,37 @@ public class ActiveResourceManager<WorkerType extends ResourceIDRetrievable>
 			while (requiredCount > pendingWorkerCounter.getNum(workerResourceSpec)) {
 				requestNewWorker(workerResourceSpec);
 			}
+		}
+	}
+
+	/**
+	 * Always execute on the current main thread executor.
+	 */
+	private class GatewayMainThreadExecutor implements ScheduledExecutor {
+
+		@Override
+		public ScheduledFuture<?> schedule(Runnable command, long delay, TimeUnit unit) {
+			return getMainThreadExecutor().schedule(command, delay, unit);
+		}
+
+		@Override
+		public <V> ScheduledFuture<V> schedule(Callable<V> callable, long delay, TimeUnit unit) {
+			return getMainThreadExecutor().schedule(callable, delay, unit);
+		}
+
+		@Override
+		public ScheduledFuture<?> scheduleAtFixedRate(Runnable command, long initialDelay, long period, TimeUnit unit) {
+			return getMainThreadExecutor().scheduleAtFixedRate(command, initialDelay, period, unit);
+		}
+
+		@Override
+		public ScheduledFuture<?> scheduleWithFixedDelay(Runnable command, long initialDelay, long delay, TimeUnit unit) {
+			return getMainThreadExecutor().scheduleWithFixedDelay(command, initialDelay, delay, unit);
+		}
+
+		@Override
+		public void execute(Runnable command) {
+			getMainThreadExecutor().execute(command);
 		}
 	}
 
